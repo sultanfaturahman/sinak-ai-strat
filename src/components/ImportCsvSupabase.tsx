@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
 import { Upload, FileText, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
-import { supabase, ImportRun } from '@/lib/supabaseClient';
+import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 
 interface ImportCsvSupabaseProps {

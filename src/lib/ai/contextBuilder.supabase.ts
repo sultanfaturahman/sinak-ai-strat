@@ -1,4 +1,31 @@
-import { supabase, MonthlyMetric, Profile } from '@/lib/supabaseClient';
+import { supabase } from '@/integrations/supabase/client';
+
+// Types for our database schema
+export type MonthlyMetric = {
+  user_id: string;
+  month_start: string;
+  sales_rp: number;
+  cogs_rp: number;
+  opex_rp: number;
+  gross_profit_rp: number;
+  net_profit_rp: number;
+  gross_margin: number;
+  net_margin: number;
+  mom_sales_pct: number;
+  top_expenses: Array<{category: string; amount_rp: number}>;
+  updated_at: string;
+};
+
+export type Profile = {
+  user_id: string;
+  display_name?: string;
+  city?: string;
+  umkm_level?: 'mikro' | 'kecil' | 'menengah' | 'besar';
+  last12m_turnover_rp: number;
+  last_recomputed_at: string;
+  created_at: string;
+  updated_at: string;
+};
 
 export interface StrategyContext {
   company: {

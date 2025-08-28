@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabaseClient';
+import { supabase } from '@/integrations/supabase/client';
 import { buildStrategyContextSupabase, StrategyContext } from './contextBuilder.supabase';
 
 export interface StrategyPlan {
