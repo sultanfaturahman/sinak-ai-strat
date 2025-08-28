@@ -1,1 +1,15 @@
 project_id = "kdfaaqzwzyhfcgjeeyvq"
+
+[api]
+enabled = true
+port = 54321
+
+[auth]
+enabled = true
+port = 54322
+
+[functions.ingest_csv]
+verify_jwt = true
+
+[functions.ai_generate_plan]
+verify_jwt = true
