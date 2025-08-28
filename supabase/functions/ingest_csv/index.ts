@@ -1,6 +1,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+const corsHeaders = (origin: string | null) => ({
+  "Access-Control-Allow-Origin": origin || "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Max-Age": "86400",
+  "Vary": "Origin"
+});
+
 type Normal = {
   dateISO: string;
   kind: "income"|"cogs"|"expense";
@@ -67,9 +75,19 @@ function parseSimpleCsv(text: string): Normal[] {
 
 Deno.serve(async (req) => {
   const stage = { v: "init" };
+  const origin = req.headers.get("origin");
+
+  // Handle CORS preflight requests
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { status: 200, headers: corsHeaders(origin) });
+  }
+
   try {
     if (req.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method Not Allowed" }), { status: 405 });
+      return new Response(JSON.stringify({ error: "Method Not Allowed" }), { 
+        status: 405, 
+        headers: { ...corsHeaders(origin), "content-type": "application/json" }
+      });
     }
 
     stage.v = "env";
@@ -81,7 +99,10 @@ Deno.serve(async (req) => {
         error: "Missing server secrets",
         missing: { SUPABASE_URL: !supabaseUrl, SUPABASE_ANON_KEY: !anonKey, SUPABASE_SERVICE_ROLE_KEY: !serviceKey },
         hint: "Set dengan `supabase secrets set ...`"
-      }), { status: 500, headers: { "content-type": "application/json" } });
+      }), { 
+        status: 500, 
+        headers: { ...corsHeaders(origin), "content-type": "application/json" } 
+      });
     }
 
     stage.v = "auth";
@@ -89,24 +110,36 @@ Deno.serve(async (req) => {
     const userClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
     const { data: { user }, error: userErr } = await userClient.auth.getUser();
     if (userErr || !user) {
-      return new Response(JSON.stringify({ error: "Unauthorized", detail: userErr?.message }), { status: 401 });
+      return new Response(JSON.stringify({ error: "Unauthorized", detail: userErr?.message }), { 
+        status: 401,
+        headers: { ...corsHeaders(origin), "content-type": "application/json" }
+      });
     }
 
     stage.v = "body";
     const body = await req.json().catch(()=>null) as { bucket?: string; path?: string } | null;
     if (!body?.bucket || !body?.path) {
-      return new Response(JSON.stringify({ error: "Bad Request", detail: "{bucket,path} required" }), { status: 400 });
+      return new Response(JSON.stringify({ error: "Bad Request", detail: "{bucket,path} required" }), { 
+        status: 400,
+        headers: { ...corsHeaders(origin), "content-type": "application/json" }
+      });
     }
     // Safety: path harus dalam folder user
     if (!body.path.startsWith(`${user.id}/`)) {
-      return new Response(JSON.stringify({ error: "Forbidden path", detail: "Path harus diawali <user_id>/" }), { status: 403 });
+      return new Response(JSON.stringify({ error: "Forbidden path", detail: "Path harus diawali <user_id>/" }), { 
+        status: 403,
+        headers: { ...corsHeaders(origin), "content-type": "application/json" }
+      });
     }
 
     stage.v = "download";
     const admin = createClient(supabaseUrl, serviceKey);
     const { data: fileData, error: dlErr } = await admin.storage.from(body.bucket).download(body.path);
     if (dlErr) {
-      return new Response(JSON.stringify({ error: "Download error", detail: dlErr.message }), { status: 400 });
+      return new Response(JSON.stringify({ error: "Download error", detail: dlErr.message }), { 
+        status: 400,
+        headers: { ...corsHeaders(origin), "content-type": "application/json" }
+      });
     }
     const csvText = await fileData.text();
 
@@ -132,7 +165,10 @@ Deno.serve(async (req) => {
       }));
       const { error: upErr } = await admin.from("transactions").upsert(payload, { onConflict: "user_id,uniq_hash" });
       if (upErr) {
-        return new Response(JSON.stringify({ error: "Upsert error", detail: upErr.message }), { status: 500 });
+        return new Response(JSON.stringify({ error: "Upsert error", detail: upErr.message }), { 
+          status: 500,
+          headers: { ...corsHeaders(origin), "content-type": "application/json" }
+        });
       }
       imported += payload.length;
     }
@@ -147,12 +183,16 @@ Deno.serve(async (req) => {
       finished_at: new Date().toISOString()
     });
 
-    return new Response(JSON.stringify({ ok: true, imported }), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ ok: true, imported }), { 
+      status: 200, 
+      headers: { ...corsHeaders(origin), "content-type": "application/json" } 
+    });
 
   } catch (e: any) {
     // Keluarkan stage agar cepat ketahuan macet di mana
     return new Response(JSON.stringify({ error: e?.message || String(e), stage: stage.v }), {
-      status: 500, headers: { "content-type": "application/json" }
+      status: 500, 
+      headers: { ...corsHeaders(origin), "content-type": "application/json" }
     });
   }
 });

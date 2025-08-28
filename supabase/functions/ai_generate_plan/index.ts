@@ -1,10 +1,13 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+const corsHeaders = (origin: string | null) => ({
+  "Access-Control-Allow-Origin": origin || "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Max-Age": "86400",
+  "Vary": "Origin"
+});
 
 // Strategy Plan JSON Schema for Gemini
 const StrategyPlanSchema = {
@@ -103,9 +106,11 @@ interface GeneratePlanRequest {
 }
 
 serve(async (req) => {
+  const origin = req.headers.get("origin");
+  
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return new Response("ok", { status: 200, headers: corsHeaders(origin) });
   }
 
   try {
@@ -133,7 +138,7 @@ serve(async (req) => {
       console.error('Authentication failed:', authError);
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
         status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
       });
     }
 
@@ -268,7 +273,7 @@ Focus pada actionable recommendations yang sesuai dengan karakteristik UMKM Indo
       json: resultJson,
       savedSummaryId: savedSummary?.id
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
     });
 
   } catch (error) {
@@ -278,7 +283,7 @@ Focus pada actionable recommendations yang sesuai dengan karakteristik UMKM Indo
       success: false 
     }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
     });
   }
 });

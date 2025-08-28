@@ -100,16 +100,13 @@ const ImportCsvSupabase: React.FC<ImportCsvSupabaseProps> = ({ onImportComplete 
 
       setProgress(70);
 
-      // Call ingest_csv edge function
+      // Call ingest_csv edge function with proper auth
       const { data: importResult, error: importError } = await supabase.functions
         .invoke('ingest_csv', {
           body: {
             bucket: 'imports',
             path: filePath
-          },
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+          }
         });
 
       if (importError) {
