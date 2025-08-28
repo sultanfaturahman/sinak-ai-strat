@@ -1,274 +1,158 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+type Normal = {
+  dateISO: string;
+  kind: "income"|"cogs"|"expense";
+  category: string;
+  amountRp: number;
+  notes: string;
 };
 
-interface CsvRow {
-  date: string;
-  type: string;
-  category: string;
-  amountRp: string;
-  notes?: string;
+function toIntRp(v: unknown): number {
+  if (typeof v === "number") return Math.trunc(v);
+  if (typeof v === "string") {
+    const n = parseInt(v.replace(/[^\d-]/g, ""), 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
 }
 
-interface ImportRequest {
-  bucket: string;
-  path: string;
+async function sha1Hex(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
 }
 
-serve(async (req) => {
-  // Handle CORS preflight requests
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+// Parser CSV sederhana (header wajib: date,type,category,amountRp,notes?)
+function parseSimpleCsv(text: string): Normal[] {
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (!lines.length) return [];
+  lines[0] = lines[0].replace(/^\uFEFF/, ""); // buang BOM kalau ada
+  const header = lines[0];
+  const delim = (header.includes(";") && !header.includes(",")) ? ";" : ",";
+  const cols = header.split(delim).map(s => s.trim().toLowerCase());
+  const idx = {
+    date: cols.indexOf("date"),
+    type: cols.indexOf("type"),
+    category: cols.indexOf("category"),
+    amountRp: cols.indexOf("amountrp"),
+    notes: cols.indexOf("notes")
+  };
+  if (idx.date < 0 || idx.type < 0 || idx.category < 0 || idx.amountRp < 0) {
+    throw new Error(`CSV header harus "date,type,category,amountRp[,notes]" (pakai delimiter , atau ;)`);
   }
 
+  const out: Normal[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const raw = lines[i].trim();
+    if (!raw) continue;
+    const parts = raw.split(delim); // catatan: tidak mendukung koma di dalam quotes
+    const get = (j: number) => (j >= 0 && j < parts.length ? parts[j].trim() : "");
+    const dateStr = get(idx.date);
+    const t = get(idx.type).toLowerCase() as Normal["kind"];
+    const cat = get(idx.category) || "other";
+    const amtStr = get(idx.amountRp);
+    const notes = get(idx.notes);
+
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) continue;
+    if (!["income", "cogs", "expense"].includes(t)) continue;
+
+    const dateISO = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+      .toISOString().slice(0, 10);
+    out.push({ dateISO, kind: t, category: cat, amountRp: toIntRp(amtStr), notes });
+  }
+  return out;
+}
+
+Deno.serve(async (req) => {
+  const stage = { v: "init" };
   try {
-    // Get user from JWT token
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      throw new Error('Missing Authorization header');
+    if (req.method !== "POST") {
+      return new Response(JSON.stringify({ error: "Method Not Allowed" }), { status: 405 });
     }
 
-    // Create Supabase clients
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+    stage.v = "env";
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const anonKey     = Deno.env.get("SUPABASE_ANON_KEY");
+    const serviceKey  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!supabaseUrl || !anonKey || !serviceKey) {
+      return new Response(JSON.stringify({
+        error: "Missing server secrets",
+        missing: { SUPABASE_URL: !supabaseUrl, SUPABASE_ANON_KEY: !anonKey, SUPABASE_SERVICE_ROLE_KEY: !serviceKey },
+        hint: "Set dengan `supabase secrets set ...`"
+      }), { status: 500, headers: { "content-type": "application/json" } });
+    }
 
-    // Client for user operations (with user JWT)
-    const supabaseUser = createClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        headers: {
-          Authorization: authHeader,
-        },
-      },
+    stage.v = "auth";
+    const authHeader = req.headers.get("Authorization") || "";
+    const userClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: authHeader } } });
+    const { data: { user }, error: userErr } = await userClient.auth.getUser();
+    if (userErr || !user) {
+      return new Response(JSON.stringify({ error: "Unauthorized", detail: userErr?.message }), { status: 401 });
+    }
+
+    stage.v = "body";
+    const body = await req.json().catch(()=>null) as { bucket?: string; path?: string } | null;
+    if (!body?.bucket || !body?.path) {
+      return new Response(JSON.stringify({ error: "Bad Request", detail: "{bucket,path} required" }), { status: 400 });
+    }
+    // Safety: path harus dalam folder user
+    if (!body.path.startsWith(`${user.id}/`)) {
+      return new Response(JSON.stringify({ error: "Forbidden path", detail: "Path harus diawali <user_id>/" }), { status: 403 });
+    }
+
+    stage.v = "download";
+    const admin = createClient(supabaseUrl, serviceKey);
+    const { data: fileData, error: dlErr } = await admin.storage.from(body.bucket).download(body.path);
+    if (dlErr) {
+      return new Response(JSON.stringify({ error: "Download error", detail: dlErr.message }), { status: 400 });
+    }
+    const csvText = await fileData.text();
+
+    stage.v = "parse";
+    const rows = parseSimpleCsv(csvText);
+
+    stage.v = "upsert";
+    const chunk = 500;
+    let imported = 0;
+    for (let i = 0; i < rows.length; i += chunk) {
+      const part = rows.slice(i, i + chunk);
+      const payload = await Promise.all(part.map(async (x) => {
+        const h = await sha1Hex(`${user.id}|${x.dateISO}|${x.kind}|${x.category}|${x.amountRp}|${x.notes}`);
+        return {
+          user_id: user.id,
+          date_ts: x.dateISO,
+          kind: x.kind,
+          category: x.category,
+          amount_rp: x.amountRp,
+          notes: x.notes,
+          uniq_hash: h
+        };
+      }));
+      const { error: upErr } = await admin.from("transactions").upsert(payload, { onConflict: "user_id,uniq_hash" });
+      if (upErr) {
+        return new Response(JSON.stringify({ error: "Upsert error", detail: upErr.message }), { status: 500 });
+      }
+      imported += payload.length;
+    }
+
+    // Log import_runs (opsional)
+    await admin.from("import_runs").insert({
+      user_id: user.id,
+      filename: body.path,
+      status: "succeeded",
+      total_rows: rows.length,
+      total_imported: imported,
+      finished_at: new Date().toISOString()
     });
 
-    // Client for admin operations (with service role)
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+    return new Response(JSON.stringify({ ok: true, imported }), { status: 200, headers: { "content-type": "application/json" } });
 
-    // Verify user authentication
-    const { data: { user }, error: authError } = await supabaseUser.auth.getUser();
-    if (authError || !user) {
-      console.error('Authentication failed:', authError);
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    console.log('Processing CSV import for user:', user.id);
-
-    // Parse request body
-    const { bucket, path }: ImportRequest = await req.json();
-    
-    if (!bucket || !path) {
-      throw new Error('Missing bucket or path in request body');
-    }
-
-    const filename = path.split('/').pop() || 'unknown.csv';
-
-    // Create import run record
-    const { data: importRun, error: runError } = await supabaseUser
-      .from('import_runs')
-      .insert({
-        user_id: user.id,
-        filename,
-        status: 'running',
-        total_rows: 0,
-        total_imported: 0
-      })
-      .select()
-      .single();
-
-    if (runError) {
-      console.error('Failed to create import run:', runError);
-      throw new Error('Failed to create import run');
-    }
-
-    console.log('Created import run:', importRun.id);
-
-    try {
-      // Download CSV file from storage using admin client
-      const { data: fileData, error: downloadError } = await supabaseAdmin
-        .storage
-        .from(bucket)
-        .download(path);
-
-      if (downloadError) {
-        console.error('Failed to download file:', downloadError);
-        throw new Error(`Failed to download file: ${downloadError.message}`);
-      }
-
-      // Convert blob to text
-      const csvText = await fileData.text();
-      console.log('Downloaded CSV, size:', csvText.length);
-
-      // Parse CSV
-      const lines = csvText.trim().split('\n');
-      if (lines.length < 2) {
-        throw new Error('CSV file must have at least a header and one data row');
-      }
-
-      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-      console.log('CSV headers:', headers);
-
-      // Validate required headers
-      const requiredHeaders = ['date', 'type', 'category', 'amountrp'];
-      for (const required of requiredHeaders) {
-        if (!headers.includes(required)) {
-          throw new Error(`Missing required column: ${required}`);
-        }
-      }
-
-      const dataRows = lines.slice(1);
-      const totalRows = dataRows.length;
-
-      console.log('Processing', totalRows, 'rows');
-
-      // Update total rows
-      await supabaseUser
-        .from('import_runs')
-        .update({ total_rows: totalRows })
-        .eq('id', importRun.id);
-
-      const transactions = [];
-      
-      for (const line of dataRows) {
-        const values = line.split(',').map(v => v.trim());
-        const row: any = {};
-        
-        headers.forEach((header, index) => {
-          row[header] = values[index] || '';
-        });
-
-        // Parse and validate data
-        const dateStr = row.date;
-        const typeStr = row.type?.toLowerCase();
-        const category = row.category;
-        const amountRpStr = row.amountrp;
-        const notes = row.notes || '';
-
-        // Validate date
-        const dateTs = new Date(dateStr);
-        if (isNaN(dateTs.getTime())) {
-          console.warn('Invalid date:', dateStr, 'skipping row');
-          continue;
-        }
-
-        // Validate transaction type
-        const validTypes = ['income', 'cogs', 'expense'];
-        if (!validTypes.includes(typeStr)) {
-          console.warn('Invalid type:', typeStr, 'skipping row');
-          continue;
-        }
-
-        // Parse amount (remove non-digits, convert to integer)
-        const amountRp = parseInt(amountRpStr.replace(/[^\d]/g, ''), 10);
-        if (isNaN(amountRp) || amountRp < 0) {
-          console.warn('Invalid amount:', amountRpStr, 'skipping row');
-          continue;
-        }
-
-        if (!category || category.trim() === '') {
-          console.warn('Empty category, skipping row');
-          continue;
-        }
-
-        transactions.push({
-          user_id: user.id,
-          date_ts: dateTs.toISOString(),
-          kind: typeStr as 'income' | 'cogs' | 'expense',
-          category: category.trim(),
-          amount_rp: amountRp,
-          notes: notes.trim() || null
-        });
-      }
-
-      console.log('Parsed', transactions.length, 'valid transactions');
-
-      if (transactions.length === 0) {
-        throw new Error('No valid transactions found in CSV');
-      }
-
-      // Insert transactions in chunks to avoid timeout
-      const chunkSize = 500;
-      let totalImported = 0;
-
-      for (let i = 0; i < transactions.length; i += chunkSize) {
-        const chunk = transactions.slice(i, i + chunkSize);
-        
-        console.log(`Importing chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(transactions.length/chunkSize)}`);
-        
-        const { data, error } = await supabaseUser
-          .from('transactions')
-          .upsert(chunk, {
-            onConflict: 'user_id,uniq_hash',
-            ignoreDuplicates: false
-          });
-
-        if (error) {
-          console.error('Failed to insert chunk:', error);
-          throw new Error(`Database insert failed: ${error.message}`);
-        }
-
-        totalImported += chunk.length;
-        
-        // Update progress
-        await supabaseUser
-          .from('import_runs')
-          .update({ total_imported: totalImported })
-          .eq('id', importRun.id);
-      }
-
-      console.log('Successfully imported', totalImported, 'transactions');
-
-      // Mark import as completed
-      await supabaseUser
-        .from('import_runs')
-        .update({ 
-          status: 'succeeded',
-          total_imported: totalImported,
-          finished_at: new Date().toISOString()
-        })
-        .eq('id', importRun.id);
-
-      return new Response(JSON.stringify({
-        success: true,
-        importRunId: importRun.id,
-        totalRows,
-        totalImported,
-        message: `Successfully imported ${totalImported} transactions`
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-
-    } catch (processingError) {
-      console.error('Processing error:', processingError);
-      
-      // Mark import as failed
-      await supabaseUser
-        .from('import_runs')
-        .update({ 
-          status: 'failed',
-          error: processingError.message,
-          finished_at: new Date().toISOString()
-        })
-        .eq('id', importRun.id);
-
-      throw processingError;
-    }
-
-  } catch (error) {
-    console.error('Error in ingest_csv function:', error);
-    return new Response(JSON.stringify({ 
-      error: error.message || 'Internal server error',
-      success: false 
-    }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  } catch (e: any) {
+    // Keluarkan stage agar cepat ketahuan macet di mana
+    return new Response(JSON.stringify({ error: e?.message || String(e), stage: stage.v }), {
+      status: 500, headers: { "content-type": "application/json" }
     });
   }
 });

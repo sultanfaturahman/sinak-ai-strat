@@ -114,33 +114,39 @@ const ImportCsvSupabase: React.FC<ImportCsvSupabaseProps> = ({ onImportComplete 
 
       if (importError) {
         console.error('Import error:', importError);
-        throw new Error(`Import failed: ${importError.message}`);
+        const errorDetails = importError.details || importError.message;
+        throw new Error(`Import failed: ${errorDetails}`);
       }
 
-      if (!importResult.success) {
-        throw new Error(importResult.error || 'Import failed');
+      if (!importResult.ok) {
+        const errorMsg = importResult.error || 'Import failed';
+        const stage = importResult.stage ? ` (stage: ${importResult.stage})` : '';
+        throw new Error(`${errorMsg}${stage}`);
       }
 
       setProgress(100);
 
-      // Fetch the complete import run details
-      const { data: importRun, error: fetchError } = await supabase
+      // Fetch the latest import run details for this user
+      const { data: importRuns, error: fetchError } = await supabase
         .from('import_runs')
         .select('*')
-        .eq('id', importResult.importRunId)
-        .single();
+        .eq('user_id', user.id)
+        .eq('filename', filePath)
+        .order('created_at', { ascending: false })
+        .limit(1);
 
       if (fetchError) {
         console.warn('Could not fetch import run details:', fetchError);
       }
 
+      const importRun = importRuns?.[0];
       const finalResult = importRun || {
-        id: importResult.importRunId,
+        id: `temp-${Date.now()}`,
         user_id: user.id,
         filename: fileName,
         status: 'succeeded' as const,
-        total_rows: importResult.totalRows,
-        total_imported: importResult.totalImported,
+        total_rows: importResult.imported || 0,
+        total_imported: importResult.imported || 0,
         created_at: new Date().toISOString(),
         finished_at: new Date().toISOString()
       };
@@ -150,7 +156,7 @@ const ImportCsvSupabase: React.FC<ImportCsvSupabaseProps> = ({ onImportComplete 
 
       toast({
         title: 'Import completed',
-        description: `Successfully imported ${importResult.totalImported} transactions`,
+        description: `Successfully imported ${importResult.imported} transactions`,
       });
 
       // Clean up uploaded file after successful import
