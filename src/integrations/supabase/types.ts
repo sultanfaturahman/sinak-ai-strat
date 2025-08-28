@@ -14,16 +14,234 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      ai_summaries: {
+        Row: {
+          context_snapshot: Json | null
+          created_at: string | null
+          id: string
+          model: string
+          result_json: Json | null
+          type: Database["public"]["Enums"]["ai_summary_type"]
+          user_id: string
+          version: number | null
+        }
+        Insert: {
+          context_snapshot?: Json | null
+          created_at?: string | null
+          id?: string
+          model: string
+          result_json?: Json | null
+          type: Database["public"]["Enums"]["ai_summary_type"]
+          user_id: string
+          version?: number | null
+        }
+        Update: {
+          context_snapshot?: Json | null
+          created_at?: string | null
+          id?: string
+          model?: string
+          result_json?: Json | null
+          type?: Database["public"]["Enums"]["ai_summary_type"]
+          user_id?: string
+          version?: number | null
+        }
+        Relationships: []
+      }
+      import_runs: {
+        Row: {
+          created_at: string | null
+          error: string | null
+          filename: string
+          finished_at: string | null
+          id: string
+          status: Database["public"]["Enums"]["import_status"] | null
+          total_imported: number | null
+          total_rows: number | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          error?: string | null
+          filename: string
+          finished_at?: string | null
+          id?: string
+          status?: Database["public"]["Enums"]["import_status"] | null
+          total_imported?: number | null
+          total_rows?: number | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string | null
+          error?: string | null
+          filename?: string
+          finished_at?: string | null
+          id?: string
+          status?: Database["public"]["Enums"]["import_status"] | null
+          total_imported?: number | null
+          total_rows?: number | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      monthly_metrics: {
+        Row: {
+          cogs_rp: number | null
+          gross_margin: number | null
+          gross_profit_rp: number | null
+          mom_sales_pct: number | null
+          month_start: string
+          net_margin: number | null
+          net_profit_rp: number | null
+          opex_rp: number | null
+          sales_rp: number | null
+          top_expenses: Json | null
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          cogs_rp?: number | null
+          gross_margin?: number | null
+          gross_profit_rp?: number | null
+          mom_sales_pct?: number | null
+          month_start: string
+          net_margin?: number | null
+          net_profit_rp?: number | null
+          opex_rp?: number | null
+          sales_rp?: number | null
+          top_expenses?: Json | null
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          cogs_rp?: number | null
+          gross_margin?: number | null
+          gross_profit_rp?: number | null
+          mom_sales_pct?: number | null
+          month_start?: string
+          net_margin?: number | null
+          net_profit_rp?: number | null
+          opex_rp?: number | null
+          sales_rp?: number | null
+          top_expenses?: Json | null
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          city: string | null
+          created_at: string | null
+          display_name: string | null
+          last_recomputed_at: string | null
+          last12m_turnover_rp: number | null
+          umkm_level: Database["public"]["Enums"]["umkm_level"] | null
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          city?: string | null
+          created_at?: string | null
+          display_name?: string | null
+          last_recomputed_at?: string | null
+          last12m_turnover_rp?: number | null
+          umkm_level?: Database["public"]["Enums"]["umkm_level"] | null
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          city?: string | null
+          created_at?: string | null
+          display_name?: string | null
+          last_recomputed_at?: string | null
+          last12m_turnover_rp?: number | null
+          umkm_level?: Database["public"]["Enums"]["umkm_level"] | null
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      transactions: {
+        Row: {
+          amount_rp: number
+          category: string
+          created_at: string | null
+          date_ts: string
+          id: string
+          kind: Database["public"]["Enums"]["txn_kind"]
+          notes: string | null
+          uniq_hash: string | null
+          updated_at: string | null
+          user_id: string
+        }
+        Insert: {
+          amount_rp: number
+          category: string
+          created_at?: string | null
+          date_ts: string
+          id?: string
+          kind: Database["public"]["Enums"]["txn_kind"]
+          notes?: string | null
+          uniq_hash?: string | null
+          updated_at?: string | null
+          user_id: string
+        }
+        Update: {
+          amount_rp?: number
+          category?: string
+          created_at?: string | null
+          date_ts?: string
+          id?: string
+          kind?: Database["public"]["Enums"]["txn_kind"]
+          notes?: string | null
+          uniq_hash?: string | null
+          updated_at?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      classify_umkm_by_turnover: {
+        Args: { turnover_rp: number }
+        Returns: Database["public"]["Enums"]["umkm_level"]
+      }
+      generate_transaction_hash: {
+        Args: {
+          p_amount_rp: number
+          p_category: string
+          p_date_ts: string
+          p_kind: Database["public"]["Enums"]["txn_kind"]
+          p_notes: string
+          p_user_id: string
+        }
+        Returns: string
+      }
+      month_start_from_ts: {
+        Args: { ts: string }
+        Returns: string
+      }
+      recompute_last12m: {
+        Args: { p_user_id: string }
+        Returns: undefined
+      }
+      recompute_month_for_user: {
+        Args: { p_month_start: string; p_user_id: string }
+        Returns: undefined
+      }
     }
     Enums: {
-      [_ in never]: never
+      ai_summary_type:
+        | "strategy_plan"
+        | "cashflow_forecast"
+        | "pricing_review"
+        | "marketing_plan"
+      import_status: "running" | "succeeded" | "failed"
+      txn_kind: "income" | "cogs" | "expense"
+      umkm_level: "mikro" | "kecil" | "menengah" | "besar"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +368,16 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      ai_summary_type: [
+        "strategy_plan",
+        "cashflow_forecast",
+        "pricing_review",
+        "marketing_plan",
+      ],
+      import_status: ["running", "succeeded", "failed"],
+      txn_kind: ["income", "cogs", "expense"],
+      umkm_level: ["mikro", "kecil", "menengah", "besar"],
+    },
   },
 } as const
