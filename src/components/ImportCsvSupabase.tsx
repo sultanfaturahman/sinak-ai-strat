@@ -6,6 +6,19 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
 import { Upload, FileText, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+
+// Type definitions
+type ImportRun = {
+  id: string;
+  user_id: string;
+  filename: string;
+  status: 'running' | 'succeeded' | 'failed';
+  total_rows: number;
+  total_imported: number;
+  error?: string;
+  created_at: string;
+  finished_at?: string;
+};
 import { useToast } from '@/hooks/use-toast';
 
 interface ImportCsvSupabaseProps {
@@ -123,6 +136,7 @@ const ImportCsvSupabase: React.FC<ImportCsvSupabaseProps> = ({ onImportComplete 
 
       const finalResult = importRun || {
         id: importResult.importRunId,
+        user_id: user.id,
         filename: fileName,
         status: 'succeeded' as const,
         total_rows: importResult.totalRows,
