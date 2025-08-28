@@ -11,6 +11,7 @@ const corsHeaders = (origin: string | null) => ({
 
 type Normal = {
   dateISO: string;
+  dateTS: string;
   kind: "income"|"cogs"|"expense";
   category: string;
   amountRp: number;
@@ -68,7 +69,9 @@ function parseSimpleCsv(text: string): Normal[] {
 
     const dateISO = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
       .toISOString().slice(0, 10);
-    out.push({ dateISO, kind: t, category: cat, amountRp: toIntRp(amtStr), notes });
+    const dateTS = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
+      .toISOString();
+    out.push({ dateISO, dateTS, kind: t, category: cat, amountRp: toIntRp(amtStr), notes });
   }
   return out;
 }
@@ -155,7 +158,7 @@ Deno.serve(async (req) => {
         const h = await sha1Hex(`${user.id}|${x.dateISO}|${x.kind}|${x.category}|${x.amountRp}|${x.notes}`);
         return {
           user_id: user.id,
-          date_ts: x.dateISO,
+          date_ts: x.dateTS,
           kind: x.kind,
           category: x.category,
           amount_rp: x.amountRp,
