@@ -1,9 +1,10 @@
 import ImportCsvSupabase from '@/components/ImportCsvSupabase';
 import StrategyPanel from '@/components/StrategyPanel';
+import AuthWrapper from '@/components/AuthWrapper';
 
 const Index = () => {
   return (
-    <div className="min-h-screen bg-background">
+    <AuthWrapper>
       <div className="container mx-auto py-8 space-y-8">
         <header className="text-center space-y-4">
           <h1 className="text-4xl font-bold">Sinak - UMKM Management System</h1>
@@ -17,7 +18,7 @@ const Index = () => {
           <StrategyPanel monthsBack={12} />
         </div>
       </div>
-    </div>
+    </AuthWrapper>
   );
 };
 
