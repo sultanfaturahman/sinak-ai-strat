@@ -32,6 +32,7 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({ monthsBack = 12 }) => {
   const [plan, setPlan] = useState<StrategyPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [contextMonths, setContextMonths] = useState(0);
+  const [metadata, setMetadata] = useState<any>(null);
   const { toast } = useToast();
 
   const handleGenerateStrategy = async () => {
@@ -45,6 +46,7 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({ monthsBack = 12 }) => {
       if (result.success && result.plan) {
         setPlan(result.plan);
         setContextMonths(result.context?.months.length || 0);
+        setMetadata(result.meta || null);
         
         toast({
           title: 'Strategy Generated',
@@ -79,6 +81,7 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({ monthsBack = 12 }) => {
     setPlan(null);
     setError(null);
     setContextMonths(0);
+    setMetadata(null);
   };
 
   const isDisabled = generating;
@@ -161,6 +164,23 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({ monthsBack = 12 }) => {
                     <p>UMKM Level: <Badge variant="secondary">{plan.umkmLevel}</Badge></p>
                     <p>Data periode: {contextMonths} bulan</p>
                     <p>Generated: {new Date().toLocaleString('id-ID')}</p>
+                    
+                    {/* Debug metadata - dev only */}
+                    {metadata && (
+                      <div className="mt-2 pt-2 border-t border-border">
+                        <p className="text-xs text-muted-foreground">
+                          <span className="font-mono">
+                            {metadata.provider || 'unknown'}/{metadata.model || 'unknown'}/{metadata.source || 'unknown'}/
+                            {metadata.monthsUsed || 0}m/{metadata.ctxHash?.slice(0, 8) || 'no-hash'}
+                          </span>
+                          {metadata.source === 'local-fallback' && (
+                            <Badge variant="destructive" className="ml-2 text-xs">
+                              FALLBACK
+                            </Badge>
+                          )}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </AlertDescription>
               </Alert>

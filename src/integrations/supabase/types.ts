@@ -16,6 +16,7 @@ export type Database = {
     Tables: {
       ai_summaries: {
         Row: {
+          context_hash: string | null
           context_snapshot: Json | null
           created_at: string | null
           id: string
@@ -26,6 +27,7 @@ export type Database = {
           version: number | null
         }
         Insert: {
+          context_hash?: string | null
           context_snapshot?: Json | null
           created_at?: string | null
           id?: string
@@ -36,6 +38,7 @@ export type Database = {
           version?: number | null
         }
         Update: {
+          context_hash?: string | null
           context_snapshot?: Json | null
           created_at?: string | null
           id?: string
@@ -206,7 +209,7 @@ export type Database = {
     }
     Functions: {
       classify_umkm_by_turnover: {
-        Args: { turnover_rp: number }
+        Args: { turnover_rp: number } | { turnover_rp: number }
         Returns: Database["public"]["Enums"]["umkm_level"]
       }
       generate_transaction_hash: {
@@ -229,12 +232,23 @@ export type Database = {
             }
         Returns: string
       }
+      insert_transaction_safe: {
+        Args: {
+          p_amount_rp: number
+          p_category: string
+          p_date_ts: string
+          p_kind: string
+          p_notes: string
+          p_user_id: string
+        }
+        Returns: undefined
+      }
       month_start_from_ts: {
-        Args: { ts: string }
+        Args: { ts: string } | { ts: string }
         Returns: string
       }
       recompute_last12m: {
-        Args: { p_user_id: string }
+        Args: { p_ref?: string; p_user_id: string } | { p_user_id: string }
         Returns: undefined
       }
       recompute_month_for_user: {

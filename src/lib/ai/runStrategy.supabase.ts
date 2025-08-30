@@ -89,7 +89,7 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
       console.log('Using cached strategy plan with matching context');
       return {
         success: true,
-        plan: cached.result_json as StrategyPlan,
+        plan: cached.result_json as unknown as StrategyPlan,
         context: context,
         source: 'cache'
       };
@@ -171,11 +171,11 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
       .from('ai_summaries')
       .insert({
         user_id: user.id,
-        type: 'strategy_plan',
+        type: 'strategy_plan' as const,
         model: meta.model || 'unknown',
         version: 1,
-        result_json: plan,
-        context_snapshot: context,
+        result_json: plan as any,
+        context_snapshot: context as any,
         context_hash: ctxHash,
       })
       .select('id')
