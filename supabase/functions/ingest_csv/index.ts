@@ -53,10 +53,6 @@ function parseSimpleCsv(text: string): Normal[] {
   return out;
 }
 
-async function sha1Hex(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(s));
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
-}
 
 Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
@@ -112,9 +108,13 @@ Deno.serve(async (req) => {
     const chunk = 500; let imported = 0;
     for (let i = 0; i < rows.length; i += chunk) {
       const part = rows.slice(i, i + chunk);
-      const payload = await Promise.all(part.map(async (x) => {
-        const h = await sha1Hex(`${user.id}|${x.dateISO}|${x.kind}|${x.category}|${x.amountRp}|${x.notes}`);
-        return { user_id: user.id, date_ts: x.dateISO, kind: x.kind, category: x.category, amount_rp: x.amountRp, notes: x.notes, uniq_hash: h };
+      const payload = part.map((x) => ({
+        user_id: user.id,
+        date_ts: x.dateISO,
+        kind: x.kind,
+        category: x.category,
+        amount_rp: x.amountRp,
+        notes: x.notes
       }));
       const { error: upErr } = await admin.from("transactions").upsert(payload, { onConflict: "user_id,uniq_hash" });
       if (upErr) {
