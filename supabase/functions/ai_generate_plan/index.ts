@@ -1,9 +1,10 @@
 // supabase/functions/ai_generate_plan/index.ts
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
-const MODEL_ID = Deno.env.get("GEMINI_MODEL_ID") ?? "gemini-2.5-flash";
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`;
+// Using Hugging Face Inference API (free)
+const HF_API_KEY = Deno.env.get("HUGGINGFACE_API_KEY"); // Optional, can work without key but with rate limits
+const MODEL_ID = "microsoft/DialoGPT-medium"; // Free model, or use "gpt2" for simpler responses
+const HF_URL = `https://api-inference.huggingface.co/models/${MODEL_ID}`;
 
 const corsHeaders = (origin: string | null) => ({
   "Access-Control-Allow-Origin": origin || "*",
@@ -123,12 +124,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    if (!GEMINI_API_KEY) {
-      return new Response(JSON.stringify({ error: "Server missing GEMINI_API_KEY" }), {
-        status: 500, headers: { ...corsHeaders(origin), "content-type": "application/json" }
-      });
-    }
-
     const body = await req.json().catch(() => null) as { context?: AnyObj } | null;
     if (!body?.context) {
       return new Response(JSON.stringify({ error: "Bad Request: context required" }), {
@@ -139,42 +134,69 @@ Deno.serve(async (req) => {
     // Sanitasi: TIDAK ADA toLocaleString di sini
     const ctx = sanitizeContext(body.context);
 
+    // Create prompt for Hugging Face model
+    const prompt = `Berdasarkan data bisnis berikut, buatlah analisis strategis dalam format JSON:
+
+KONTEKS:
+${JSON.stringify(ctx, null, 2)}
+
+TUGAS: Buat analisis strategi dengan format JSON yang berisi:
+1. diagnosis: array berisi 3-7 poin analisis kondisi bisnis
+2. quickWins: array berisi 3-5 tindakan cepat (title, impact: rendah/sedang/tinggi, effort: rendah/sedang/tinggi, action)
+3. initiatives: array berisi 3-6 inisiatif strategis (title, description, owner, startMonth: YYYY-MM, kpi, target)
+4. risks: array berisi risiko-risiko potensial
+5. assumptions: array berisi asumsi yang digunakan
+6. dataGaps: array berisi gap data yang teridentifikasi
+7. umkmLevel: mikro/kecil/menengah/besar
+
+Berikan HANYA JSON valid tanpa penjelasan tambahan:`;
+
+    // Prepare headers for Hugging Face API
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    
+    if (HF_API_KEY) {
+      headers["Authorization"] = `Bearer ${HF_API_KEY}`;
+    }
+
     const payload = {
-      contents: [{
-        role: "user",
-        parts: [
-          { text: "# KONTEKS (JSON)\n" + JSON.stringify(ctx) },
-          { text: "# TUGAS\n1) Diagnosa (3–7 poin)\n2) 3–5 quick wins\n3) 3–6 inisiatif (owner, startMonth YYYY-MM, KPI, target)\n4) Risiko & asumsi.\nWAJIB: hanya JSON valid sesuai schema." }
-        ]
-      }],
-      generationConfig: {
+      inputs: prompt,
+      parameters: {
+        max_new_tokens: 1000,
         temperature: 0.2,
-        maxOutputTokens: 1536,
-        response_mime_type: "application/json",
-        response_schema: StrategyPlanSchema
+        return_full_text: false
       }
     };
 
-    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+    const res = await fetch(HF_URL, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: headers,
       body: JSON.stringify(payload)
     });
 
     if (!res.ok) {
       const errBody = await res.text().catch(() => "");
       return new Response(JSON.stringify({
-        error: "Gemini HTTP error",
+        error: "Hugging Face API error",
         status: res.status,
-        body: errBody.slice(0, 2000) // biar tidak kepanjangan
+        body: errBody.slice(0, 2000)
       }), { status: 502, headers: { ...corsHeaders(origin), "content-type": "application/json" }});
     }
 
     const data = await res.json().catch(() => ({}));
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    // Hugging Face returns either array with generated_text or direct text
+    let text = "";
+    if (Array.isArray(data) && data.length > 0) {
+      text = data[0]?.generated_text || data[0] || "";
+    } else if (typeof data === "string") {
+      text = data;
+    } else if (data?.generated_text) {
+      text = data.generated_text;
+    }
 
-    console.log("Gemini response status:", res.status);
-    console.log("Raw text from Gemini:", text);
+    console.log("Hugging Face response status:", res.status);
+    console.log("Raw text from Hugging Face:", text);
     console.log("Full data structure:", JSON.stringify(data, null, 2));
 
     let json: unknown;
