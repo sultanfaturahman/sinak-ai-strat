@@ -3,7 +3,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 // Using Hugging Face Inference API (free)
 const HF_API_KEY = Deno.env.get("HUGGINGFACE_API_KEY"); // Optional, can work without key but with rate limits
-const MODEL_ID = "microsoft/Phi-3-mini-4k-instruct"; // Better model for instruction following
+const MODEL_ID = "facebook/blenderbot-400M-distill"; // Reliable model for text generation
 const HF_URL = `https://api-inference.huggingface.co/models/${MODEL_ID}`;
 
 const corsHeaders = (origin: string | null) => ({
@@ -169,18 +169,35 @@ Berikan HANYA JSON valid tanpa penjelasan tambahan:`;
       }
     };
 
+    console.log("Attempting to call Hugging Face API...");
+    console.log("Model:", MODEL_ID);
+    console.log("URL:", HF_URL);
+    console.log("Has API Key:", !!HF_API_KEY);
+
     const res = await fetch(HF_URL, {
       method: "POST",
       headers: headers,
       body: JSON.stringify(payload)
     });
 
+    console.log("Hugging Face API response status:", res.status);
+    console.log("Response headers:", Object.fromEntries(res.headers.entries()));
+
     if (!res.ok) {
       const errBody = await res.text().catch(() => "");
+      console.error("Hugging Face API error:", {
+        status: res.status,
+        statusText: res.statusText,
+        body: errBody,
+        url: HF_URL
+      });
       return new Response(JSON.stringify({
         error: "Hugging Face API error",
         status: res.status,
-        body: errBody.slice(0, 2000)
+        statusText: res.statusText,
+        body: errBody.slice(0, 2000),
+        model: MODEL_ID,
+        hasApiKey: !!HF_API_KEY
       }), { status: 502, headers: { ...corsHeaders(origin), "content-type": "application/json" }});
     }
 
