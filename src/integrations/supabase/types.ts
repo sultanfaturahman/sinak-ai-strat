@@ -210,14 +210,23 @@ export type Database = {
         Returns: Database["public"]["Enums"]["umkm_level"]
       }
       generate_transaction_hash: {
-        Args: {
-          p_amount_rp: number
-          p_category: string
-          p_date_ts: string
-          p_kind: Database["public"]["Enums"]["txn_kind"]
-          p_notes: string
-          p_user_id: string
-        }
+        Args:
+          | {
+              p_amount_rp: number
+              p_category: string
+              p_date_ts: string
+              p_kind: Database["public"]["Enums"]["txn_kind"]
+              p_notes: string
+              p_user_id: string
+            }
+          | {
+              p_amount_rp: number
+              p_category: string
+              p_date_ts: string
+              p_kind: string
+              p_notes: string
+              p_user_id: string
+            }
         Returns: string
       }
       month_start_from_ts: {
