@@ -79,7 +79,21 @@ export default function ImportCsvSupabase({ onImportComplete }: ImportCsvSupabas
 
       if (processError) {
         console.error("Processing error:", processError);
-        throw new Error(`Pemrosesan gagal: ${processError.message || "Edge Function error"}`);
+        // Try to extract detailed error information
+        let errorMessage = "Edge Function error";
+        try {
+          if (processError.context && typeof processError.context.json === 'function') {
+            const errorDetails = await processError.context.json();
+            errorMessage = `${errorDetails.error || "Unknown error"}`;
+            if (errorDetails.detail) errorMessage += ` - ${errorDetails.detail}`;
+            if (errorDetails.stage) errorMessage += ` (stage: ${errorDetails.stage})`;
+          } else {
+            errorMessage = processError.message || "Edge Function returned a non-2xx status code";
+          }
+        } catch {
+          errorMessage = processError.message || "Edge Function error";
+        }
+        throw new Error(`Pemrosesan gagal: ${errorMessage}`);
       }
 
       setProgress(90);
