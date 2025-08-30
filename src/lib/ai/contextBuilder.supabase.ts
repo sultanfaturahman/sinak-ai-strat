@@ -77,20 +77,36 @@ export async function buildStrategyContextSupabase(monthsBack: number = 12): Pro
       console.error('Error fetching profile:', profileError);
     }
 
-    // Fetch monthly metrics (descending order, then reverse to get chronological)
+    // First, get all available months to determine the actual data range
+    const { data: allMetrics, error: allMetricsError } = await supabase
+      .from('monthly_metrics')
+      .select('month_start')
+      .eq('user_id', user.id)
+      .order('month_start', { ascending: false });
+
+    if (allMetricsError) {
+      throw new Error(`Failed to fetch monthly metrics: ${allMetricsError.message}`);
+    }
+
+    if (!allMetrics || allMetrics.length === 0) {
+      throw new Error('No monthly metrics found. Please import transaction data first.');
+    }
+
+    // Use the smaller of: requested months or available months
+    const actualMonthsToFetch = Math.min(monthsBack, allMetrics.length);
+    
+    console.log(`Fetching ${actualMonthsToFetch} months of data (available: ${allMetrics.length}, requested: ${monthsBack})`);
+
+    // Fetch the actual monthly metrics with the corrected limit
     const { data: monthlyMetrics, error: metricsError } = await supabase
       .from('monthly_metrics')
       .select('*')
       .eq('user_id', user.id)
       .order('month_start', { ascending: false })
-      .limit(monthsBack);
+      .limit(actualMonthsToFetch);
 
     if (metricsError) {
       throw new Error(`Failed to fetch monthly metrics: ${metricsError.message}`);
-    }
-
-    if (!monthlyMetrics || monthlyMetrics.length === 0) {
-      throw new Error('No monthly metrics found. Please import transaction data first.');
     }
 
     // Reverse to get chronological order (oldest to newest)
