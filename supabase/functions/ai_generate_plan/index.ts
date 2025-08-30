@@ -44,6 +44,40 @@ const StrategyPlanSchema = {
   required: ["umkmLevel","diagnosis","quickWins","initiatives"]
 };
 
+type AnyObj = Record<string, any>;
+
+const num = (v: unknown, d = 0): number => {
+  if (typeof v === "number") return Number.isFinite(v) ? v : d;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+const str = (v: unknown, d = ""): string => (typeof v === "string" ? v : (v == null ? d : String(v)));
+const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+
+function sanitizeContext(raw: AnyObj) {
+  const months = arr(raw?.months).map((m: AnyObj) => ({
+    month: str(m?.month),
+    salesRp: num(m?.salesRp, 0),
+    cogsRp:  num(m?.cogsRp, 0),
+    opexRp:  num(m?.opexRp, 0),
+    grossMargin: num(m?.grossMargin, 0),
+    netMargin:   num(m?.netMargin, 0),
+    topExpenses: arr(m?.topExpenses).map((t: AnyObj) => ({
+      category: str(t?.category, "other"),
+      totalRp:  num(t?.totalRp, 0),
+    })),
+  }));
+  return {
+    company: { name: str(raw?.company?.name), city: str(raw?.company?.city) },
+    umkmLevel: ["mikro","kecil","menengah","besar"].includes(raw?.umkmLevel) ? raw.umkmLevel : "mikro",
+    window: str(raw?.window),
+    months,
+    last12mTurnoverRp: num(raw?.last12mTurnoverRp, months.reduce((s,m)=>s + num(m.salesRp,0), 0)),
+    seasonalityHints: arr(raw?.seasonalityHints).map((x) => str(x)),
+    notes: arr(raw?.notes).map((x) => str(x)),
+  };
+}
+
 function extractFirstJson(text: string): string | null {
   const iObj = text.indexOf("{"), iArr = text.indexOf("[");
   let start = -1, open = "", close = "";
@@ -77,19 +111,22 @@ Deno.serve(async (req) => {
       });
     }
 
-    const body = await req.json().catch(() => null) as { context?: unknown } | null;
+    const body = await req.json().catch(() => null) as { context?: AnyObj } | null;
     if (!body?.context) {
       return new Response(JSON.stringify({ error: "Bad Request: context required" }), {
         status: 400, headers: { ...corsHeaders(origin), "content-type": "application/json" }
       });
     }
 
+    // Sanitasi: TIDAK ADA toLocaleString di sini
+    const ctx = sanitizeContext(body.context);
+
     const payload = {
       contents: [{
         role: "user",
         parts: [
-          { text: "# KONTEKS (JSON)\n" + JSON.stringify(body.context) },
-          { text: "# TUGAS\n1) Diagnosa (3–7 poin)\n2) 3–5 quick wins\n3) 3–6 inisiatif 3–6 bulan (owner, startMonth, KPI, target)\n4) Risiko & asumsi.\nWAJIB: hanya JSON valid sesuai schema." }
+          { text: "# KONTEKS (JSON)\n" + JSON.stringify(ctx) },
+          { text: "# TUGAS\n1) Diagnosa (3–7 poin)\n2) 3–5 quick wins\n3) 3–6 inisiatif (owner, startMonth YYYY-MM, KPI, target)\n4) Risiko & asumsi.\nWAJIB: hanya JSON valid sesuai schema." }
         ]
       }],
       generationConfig: {
