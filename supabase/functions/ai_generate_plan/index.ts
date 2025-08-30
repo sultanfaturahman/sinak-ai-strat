@@ -3,7 +3,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 // Using Hugging Face Inference API (free)
 const HF_API_KEY = Deno.env.get("HUGGINGFACE_API_KEY"); // Optional, can work without key but with rate limits
-const MODEL_ID = "google/flan-t5-large"; // Better model for text generation tasks
+const MODEL_ID = "microsoft/Phi-3-mini-4k-instruct"; // Better model for instruction following
 const HF_URL = `https://api-inference.huggingface.co/models/${MODEL_ID}`;
 
 const corsHeaders = (origin: string | null) => ({
