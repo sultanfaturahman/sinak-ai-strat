@@ -1,5 +1,9 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+// supabase/functions/ai_generate_plan/index.ts
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+const MODEL_ID = Deno.env.get("GEMINI_MODEL_ID") ?? "gemini-2.5-flash";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent`;
 
 const corsHeaders = (origin: string | null) => ({
   "Access-Control-Allow-Origin": origin || "*",
@@ -9,281 +13,132 @@ const corsHeaders = (origin: string | null) => ({
   "Vary": "Origin"
 });
 
-// Strategy Plan JSON Schema for Gemini
+// Skema output strategi (JSON-mode)
 const StrategyPlanSchema = {
   type: "object",
   properties: {
-    umkmLevel: {
-      type: "string",
-      enum: ["mikro", "kecil", "menengah", "besar"]
-    },
-    diagnosis: {
-      type: "array",
-      items: { type: "string" },
-      description: "Array of key business diagnosis points"
-    },
-    quickWins: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          impact: {
-            type: "string",
-            enum: ["rendah", "sedang", "tinggi"]
-          },
-          effort: {
-            type: "string", 
-            enum: ["rendah", "sedang", "tinggi"]
-          },
-          action: { type: "string" }
-        },
-        required: ["title", "impact", "effort", "action"]
-      }
-    },
-    initiatives: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-          description: { type: "string" },
-          owner: { type: "string" },
-          startMonth: { 
-            type: "string",
-            pattern: "^\\d{4}-\\d{2}$"
-          },
-          kpi: { type: "string" },
-          target: { type: "string" }
-        },
-        required: ["title", "description", "owner", "startMonth", "kpi", "target"]
-      }
-    },
-    risks: {
-      type: "array",
-      items: { type: "string" }
-    },
-    assumptions: {
-      type: "array", 
-      items: { type: "string" }
-    },
-    dataGaps: {
-      type: "array",
-      items: { type: "string" }
-    }
+    umkmLevel: { type: "string", enum: ["mikro","kecil","menengah","besar"] },
+    diagnosis: { type: "array", items: { type: "string" } },
+    quickWins: { type: "array", items: {
+      type: "object", properties: {
+        title: { type: "string" },
+        impact:{ type: "string", enum: ["rendah","sedang","tinggi"] },
+        effort:{ type: "string", enum: ["rendah","sedang","tinggi"] },
+        action:{ type: "string" }
+      }, required: ["title","impact","effort","action"]
+    }, minItems: 3, maxItems: 5 },
+    initiatives: { type: "array", items: {
+      type: "object", properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        owner: { type: "string" },
+        startMonth: { type: "string", pattern: "^\\d{4}-\\d{2}$" },
+        kpi: { type: "string" },
+        target: { type: "string" }
+      }, required: ["title","description","owner","startMonth","kpi","target"]
+    }, minItems: 3, maxItems: 6 },
+    risks: { type: "array", items: { type: "string" } },
+    assumptions: { type: "array", items: { type: "string" } },
+    dataGaps: { type: "array", items: { type: "string" } }
   },
-  required: ["umkmLevel", "diagnosis", "quickWins", "initiatives"]
+  required: ["umkmLevel","diagnosis","quickWins","initiatives"]
 };
 
-interface GeneratePlanRequest {
-  context: {
-    company: {
-      displayName?: string;
-      city?: string;
-      umkmLevel?: string;
-    };
-    window: {
-      monthsCount: number;
-      startMonth: string;
-      endMonth: string;
-    };
-    months: Array<{
-      monthStart: string;
-      salesRp: number;
-      cogsRp: number;
-      opexRp: number;
-      grossProfitRp: number;
-      netProfitRp: number;
-      grossMargin: number;
-      netMargin: number;
-      momSalesPct: number;
-      topExpenses: Array<{category: string; amount_rp: number}>;
-    }>;
-    last12mTurnoverRp: number;
-    seasonalityHints: string[];
-    notes: string[];
-  };
+function extractFirstJson(text: string): string | null {
+  const iObj = text.indexOf("{"), iArr = text.indexOf("[");
+  let start = -1, open = "", close = "";
+  if (iObj !== -1 && (iArr === -1 || iObj < iArr)) { start = iObj; open = "{"; close = "}"; }
+  else if (iArr !== -1) { start = iArr; open = "["; close = "]"; }
+  if (start === -1) return null;
+  let depth = 0, inStr = false, prev = "";
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) { if (ch === '"' && prev !== "\\") inStr = false; }
+    else {
+      if (ch === '"') inStr = true;
+      else if (ch === open) depth++;
+      else if (ch === close) { depth--; if (depth === 0) return text.slice(start, i+1); }
+    }
+    prev = ch;
+  }
+  return null;
 }
 
-serve(async (req) => {
+Deno.serve(async (req) => {
   const origin = req.headers.get("origin");
-  
-  // Handle CORS preflight requests
-  if (req.method === 'OPTIONS') {
+  if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsHeaders(origin) });
   }
 
   try {
-    // Get user from JWT token
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      throw new Error('Missing Authorization header');
-    }
-
-    // Create Supabase client
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        headers: {
-          Authorization: authHeader,
-        },
-      },
-    });
-
-    // Verify user authentication
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) {
-      console.error('Authentication failed:', authError);
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
+    if (!GEMINI_API_KEY) {
+      return new Response(JSON.stringify({ error: "Server missing GEMINI_API_KEY" }), {
+        status: 500, headers: { ...corsHeaders(origin), "content-type": "application/json" }
       });
     }
 
-    console.log('Generating strategy plan for user:', user.id);
-
-    // Parse request body
-    const { context }: GeneratePlanRequest = await req.json();
-    
-    if (!context) {
-      throw new Error('Missing context in request body');
+    const body = await req.json().catch(() => null) as { context?: unknown } | null;
+    if (!body?.context) {
+      return new Response(JSON.stringify({ error: "Bad Request: context required" }), {
+        status: 400, headers: { ...corsHeaders(origin), "content-type": "application/json" }
+      });
     }
 
-    // Get Gemini API configuration
-    const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
-    const geminiModel = Deno.env.get('GEMINI_MODEL_ID') || 'gemini-2.5-flash';
-
-    if (!geminiApiKey) {
-      throw new Error('GEMINI_API_KEY not configured');
-    }
-
-    console.log('Using Gemini model:', geminiModel);
-
-    // Prepare context for AI
-    const contextStr = `
-UMKM Business Context:
-- Company: ${context.company.displayName || 'Unknown'} di ${context.company.city || 'Unknown'}
-- UMKM Level: ${context.company.umkmLevel || 'Unknown'}
-- Analysis Period: ${context.window.startMonth} to ${context.window.endMonth} (${context.window.monthsCount} months)
-- Last 12M Turnover: Rp ${context.last12mTurnoverRp.toLocaleString()}
-
-Financial Performance:
-${context.months.map(month => `
-- ${month.monthStart}: Sales Rp${month.salesRp.toLocaleString()}, Gross Profit Rp${month.grossProfitRp.toLocaleString()} (${month.grossMargin}%), Net Profit Rp${month.netProfitRp.toLocaleString()} (${month.netMargin}%), MoM Growth ${month.momSalesPct}%
-  Top Expenses: ${month.topExpenses.slice(0,3).map(exp => `${exp.category} Rp${exp.amount_rp.toLocaleString()}`).join(', ')}
-`).join('')}
-
-Seasonality: ${context.seasonalityHints.join(', ')}
-Additional Notes: ${context.notes.join(', ')}
-
-Berikan analisis strategis UMKM ini dalam bahasa Indonesia dengan diagnosis bisnis, quick wins prioritas tinggi, dan inisiatif strategis yang konkret dan dapat diimplementasikan.
-`;
-
-    const requestBody = {
+    const payload = {
       contents: [{
-        parts: [{
-          text: `Sebagai konsultan bisnis UMKM Indonesia, analisis data finansial berikut dan berikan rencana strategis yang terstruktur:
-
-${contextStr}
-
-Berikan analisis dalam format JSON dengan:
-1. diagnosis: array string insight utama tentang kondisi bisnis
-2. quickWins: array objek dengan title, impact (rendah/sedang/tinggi), effort (rendah/sedang/tinggi), action
-3. initiatives: array objek dengan title, description, owner, startMonth (YYYY-MM), kpi, target
-4. risks: array string potensi risiko 
-5. assumptions: array string asumsi yang digunakan
-6. dataGaps: array string gap data yang perlu dilengkapi
-
-Focus pada actionable recommendations yang sesuai dengan karakteristik UMKM Indonesia.`
-        }]
+        role: "user",
+        parts: [
+          { text: "# KONTEKS (JSON)\n" + JSON.stringify(body.context) },
+          { text: "# TUGAS\n1) Diagnosa (3–7 poin)\n2) 3–5 quick wins\n3) 3–6 inisiatif 3–6 bulan (owner, startMonth, KPI, target)\n4) Risiko & asumsi.\nWAJIB: hanya JSON valid sesuai schema." }
+        ]
       }],
       generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 1536,
         response_mime_type: "application/json",
         response_schema: StrategyPlanSchema
       }
     };
 
-    console.log('Calling Gemini API...');
-
-    // Call Gemini API
-    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiApiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody),
+    const res = await fetch(`${GEMINI_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload)
     });
 
-    if (!geminiResponse.ok) {
-      const errorText = await geminiResponse.text();
-      console.error('Gemini API error:', geminiResponse.status, errorText);
-      throw new Error(`Gemini API error: ${geminiResponse.status} ${errorText}`);
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      return new Response(JSON.stringify({
+        error: "Gemini HTTP error",
+        status: res.status,
+        body: errBody.slice(0, 2000) // biar tidak kepanjangan
+      }), { status: 502, headers: { ...corsHeaders(origin), "content-type": "application/json" }});
     }
 
-    const geminiResult = await geminiResponse.json();
-    console.log('Gemini response received');
+    const data = await res.json().catch(() => ({}));
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
-    // Extract JSON from response
-    const candidateText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!candidateText) {
-      throw new Error('No content in Gemini response');
-    }
-
-    let resultJson;
+    let json: unknown;
     try {
-      // Try to parse as pure JSON first
-      resultJson = JSON.parse(candidateText);
+      if (!text) throw new Error("Empty model response");
+      json = JSON.parse(text);
     } catch {
-      // If that fails, extract JSON from text
-      const jsonMatch = candidateText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        resultJson = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('No valid JSON found in Gemini response');
+      const ex = text ? extractFirstJson(text) : null;
+      if (!ex) {
+        return new Response(JSON.stringify({ error: "Model returned non-JSON", raw: text || data }), {
+          status: 502, headers: { ...corsHeaders(origin), "content-type": "application/json" }
+        });
       }
+      json = JSON.parse(ex);
     }
 
-    console.log('Successfully parsed strategy plan JSON');
-
-    // Save to ai_summaries table
-    const { data: savedSummary, error: saveError } = await supabase
-      .from('ai_summaries')
-      .insert({
-        user_id: user.id,
-        type: 'strategy_plan',
-        model: geminiModel,
-        context_snapshot: context,
-        result_json: resultJson,
-        version: 1
-      })
-      .select()
-      .single();
-
-    if (saveError) {
-      console.error('Failed to save AI summary:', saveError);
-      // Continue anyway, return the result
-    } else {
-      console.log('Saved strategy plan to database:', savedSummary.id);
-    }
-
-    return new Response(JSON.stringify({
-      success: true,
-      json: resultJson,
-      savedSummaryId: savedSummary?.id
-    }), {
-      headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
+    return new Response(JSON.stringify({ ok: true, json }), {
+      status: 200, headers: { ...corsHeaders(origin), "content-type": "application/json" }
     });
 
-  } catch (error) {
-    console.error('Error in ai_generate_plan function:', error);
-    return new Response(JSON.stringify({ 
-      error: error.message || 'Internal server error',
-      success: false 
-    }), {
-      status: 500,
-      headers: { ...corsHeaders(origin), 'Content-Type': 'application/json' },
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e?.message || String(e) }), {
+      status: 500, headers: { ...corsHeaders(origin), "content-type": "application/json" }
     });
   }
 });

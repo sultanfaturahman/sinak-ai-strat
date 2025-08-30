@@ -72,14 +72,34 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
 
     if (functionError) {
       console.error('Edge function error:', functionError);
+      
+      // Handle detailed error from robust function
+      let errorMessage = `AI service error: ${functionError.message}`;
+      
+      // Try to get detailed error from function response
+      try {
+        if (functionError.context) {
+          const errorDetail = await functionError.context.json();
+          if (errorDetail.error) {
+            errorMessage = errorDetail.error;
+            if (errorDetail.status && errorDetail.body) {
+              errorMessage += ` (HTTP ${errorDetail.status}: ${errorDetail.body})`;
+            }
+          }
+        }
+      } catch (e) {
+        console.log('Could not parse error detail:', e);
+      }
+      
       return {
         success: false,
-        error: `AI service error: ${functionError.message}`,
+        error: errorMessage,
         context
       };
     }
 
-    if (!response.success) {
+    // Handle new response format from robust function
+    if (!response.ok) {
       console.error('AI generation failed:', response.error);
       return {
         success: false,
