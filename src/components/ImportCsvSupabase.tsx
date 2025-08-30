@@ -1,301 +1,235 @@
-import React, { useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Progress } from '@/components/ui/progress';
-import { Upload, FileText, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
-import { supabase } from '@/integrations/supabase/client';
-
-// Type definitions
-type ImportRun = {
-  id: string;
-  user_id: string;
-  filename: string;
-  status: 'running' | 'succeeded' | 'failed';
-  total_rows: number;
-  total_imported: number;
-  error?: string;
-  created_at: string;
-  finished_at?: string;
-};
-import { useToast } from '@/hooks/use-toast';
+import React, { useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Progress } from "@/components/ui/progress";
+import { Upload, CheckCircle, AlertCircle } from "lucide-react";
 
 interface ImportCsvSupabaseProps {
-  onImportComplete?: (result: ImportRun) => void;
+  onImportComplete?: () => void;
 }
 
-const ImportCsvSupabase: React.FC<ImportCsvSupabaseProps> = ({ onImportComplete }) => {
+export default function ImportCsvSupabase({ onImportComplete }: ImportCsvSupabaseProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [importing, setImporting] = useState(false);
+  const [status, setStatus] = useState<"idle" | "uploading" | "processing" | "success" | "error">("idle");
+  const [message, setMessage] = useState("");
   const [progress, setProgress] = useState(0);
-  const [result, setResult] = useState<ImportRun | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const { toast } = useToast();
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = event.target.files?.[0];
     if (selectedFile) {
       if (selectedFile.type !== 'text/csv' && !selectedFile.name.endsWith('.csv')) {
-        setError('Please select a CSV file');
+        setMessage("Pilih file CSV yang valid");
+        setStatus("error");
         return;
       }
       setFile(selectedFile);
-      setError(null);
-      setResult(null);
+      setStatus("idle");
+      setMessage("");
     }
   };
 
   const handleUploadAndImport = async () => {
-    if (!file) {
-      setError('Please select a CSV file');
-      return;
-    }
+    if (!file) return;
 
     try {
-      setUploading(true);
-      setImporting(false);
+      setStatus("uploading");
       setProgress(10);
-      setError(null);
+      setMessage("Memverifikasi autentikasi...");
 
-      // Get current user
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-      if (authError || !user) {
-        throw new Error('Please log in to import CSV files');
+      // Get authenticated user
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        throw new Error("Harus login terlebih dahulu");
       }
 
-      const fileName = `${Date.now()}_${file.name}`;
-      const filePath = `${user.id}/${fileName}`;
+      setProgress(20);
+      setMessage("Mengunggah file ke storage...");
 
-      setProgress(30);
+      // Upload file to Supabase Storage
+      const bucket = "imports";
+      const timestamp = Date.now();
+      const path = `${user.id}/${timestamp}_${file.name}`;
 
-      // Upload file to storage
-      const { error: uploadError } = await supabase.storage
-        .from('imports')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: false
-        });
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from(bucket)
+        .upload(path, file, { upsert: false });
 
       if (uploadError) {
-        console.error('Upload error:', uploadError);
-        throw new Error(`Failed to upload file: ${uploadError.message}`);
+        throw new Error(`Upload gagal: ${uploadError.message}`);
       }
-
-      toast({
-        title: 'File uploaded',
-        description: 'Starting CSV processing...',
-      });
 
       setProgress(50);
-      setUploading(false);
-      setImporting(true);
+      setStatus("processing");
+      setMessage("Memproses data CSV...");
 
-      // Get JWT token for the edge function
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        throw new Error('No valid session found');
+      // Call ingest_csv edge function
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+
+      if (!token) {
+        throw new Error("Token autentikasi tidak ditemukan");
       }
 
-      setProgress(70);
+      const { data: processData, error: processError } = await supabase.functions.invoke("ingest_csv", {
+        body: { bucket, path },
+        headers: { Authorization: `Bearer ${token}` }
+      });
 
-      // Call ingest_csv edge function with proper auth
-      const { data: importResult, error: importError } = await supabase.functions
-        .invoke('ingest_csv', {
-          body: {
-            bucket: 'imports',
-            path: filePath
-          }
-        });
-
-      if (importError) {
-        console.error('Import error:', importError);
-        const errorDetails = importError.details || importError.message;
-        throw new Error(`Import failed: ${errorDetails}`);
+      if (processError) {
+        console.error("Processing error:", processError);
+        throw new Error(`Pemrosesan gagal: ${processError.message || "Edge Function error"}`);
       }
 
-      if (!importResult.ok) {
-        const errorMsg = importResult.error || 'Import failed';
-        const stage = importResult.stage ? ` (stage: ${importResult.stage})` : '';
-        throw new Error(`${errorMsg}${stage}`);
-      }
+      setProgress(90);
+      setMessage("Membersihkan file sementara...");
+
+      // Clean up uploaded file
+      await supabase.storage.from(bucket).remove([path]);
 
       setProgress(100);
+      setStatus("success");
+      setMessage(`Berhasil mengimpor ${processData.imported} transaksi`);
 
-      // Fetch the latest import run details for this user
-      const { data: importRuns, error: fetchError } = await supabase
-        .from('import_runs')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('filename', filePath)
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      if (fetchError) {
-        console.warn('Could not fetch import run details:', fetchError);
+      // Call completion callback
+      if (onImportComplete) {
+        onImportComplete();
       }
 
-      const importRun = importRuns?.[0];
-      const finalResult = importRun || {
-        id: `temp-${Date.now()}`,
-        user_id: user.id,
-        filename: fileName,
-        status: 'succeeded' as const,
-        total_rows: importResult.imported || 0,
-        total_imported: importResult.imported || 0,
-        created_at: new Date().toISOString(),
-        finished_at: new Date().toISOString()
-      };
-
-      setResult(finalResult);
-      onImportComplete?.(finalResult);
-
-      toast({
-        title: 'Import completed',
-        description: `Successfully imported ${importResult.imported} transactions`,
-      });
-
-      // Clean up uploaded file after successful import
-      await supabase.storage
-        .from('imports')
-        .remove([filePath]);
-
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-      console.error('Import process error:', err);
-      setError(errorMessage);
-      
-      toast({
-        title: 'Import failed',
-        description: errorMessage,
-        variant: 'destructive',
-      });
-    } finally {
-      setUploading(false);
-      setImporting(false);
+    } catch (error: any) {
+      console.error("Import process error:", error);
+      setStatus("error");
+      setMessage(error.message || "Terjadi kesalahan tidak terduga");
       setProgress(0);
     }
   };
 
   const resetImport = () => {
     setFile(null);
-    setResult(null);
-    setError(null);
+    setStatus("idle");
+    setMessage("");
     setProgress(0);
   };
 
-  const isProcessing = uploading || importing;
+  const getStatusIcon = () => {
+    switch (status) {
+      case "success":
+        return <CheckCircle className="h-5 w-5 text-green-600" />;
+      case "error":
+        return <AlertCircle className="h-5 w-5 text-red-600" />;
+      default:
+        return <Upload className="h-5 w-5" />;
+    }
+  };
 
-  return (
-    <Card className="w-full max-w-2xl">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Upload className="h-5 w-5" />
-          Import Transaksi CSV
-        </CardTitle>
-        <CardDescription>
-          Upload file CSV dengan kolom: date, type, category, amountRp, notes (opsional)
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {!result && (
-          <>
-            <div className="space-y-2">
-              <label htmlFor="csv-file" className="text-sm font-medium">
-                Pilih File CSV
-              </label>
-              <Input
-                id="csv-file"
-                type="file"
-                accept=".csv,text/csv"
-                onChange={handleFileSelect}
-                disabled={isProcessing}
-                className="cursor-pointer"
-              />
-            </div>
+  const getStatusColor = () => {
+    switch (status) {
+      case "success":
+        return "text-green-600";
+      case "error":
+        return "text-red-600";
+      case "uploading":
+      case "processing":
+        return "text-blue-600";
+      default:
+        return "text-gray-600";
+    }
+  };
 
-            {file && (
-              <div className="flex items-center gap-2 p-2 bg-muted rounded">
-                <FileText className="h-4 w-4" />
-                <span className="text-sm">{file.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  ({Math.round(file.size / 1024)} KB)
-                </span>
-              </div>
-            )}
+  const renderContent = () => {
+    if (status === "uploading" || status === "processing") {
+      return (
+        <div className="space-y-4">
+          <Progress value={progress} className="w-full" />
+          <p className={`text-sm ${getStatusColor()}`}>{message}</p>
+        </div>
+      );
+    }
 
-            <Button
-              onClick={handleUploadAndImport}
-              disabled={!file || isProcessing}
-              className="w-full"
-            >
-              {isProcessing ? (
-                uploading ? 'Uploading...' : 'Processing...'
-              ) : (
-                'Upload dan Import'
-              )}
-            </Button>
-
-            {isProcessing && (
-              <div className="space-y-2">
-                <Progress value={progress} className="w-full" />
-                <p className="text-sm text-muted-foreground text-center">
-                  {uploading ? 'Mengupload file...' : 'Memproses transaksi...'}
-                </p>
-              </div>
-            )}
-          </>
-        )}
-
-        {error && (
-          <Alert variant="destructive">
-            <XCircle className="h-4 w-4" />
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-
-        {result && (
+    if (status === "success") {
+      return (
+        <div className="space-y-4">
           <Alert>
             <CheckCircle className="h-4 w-4" />
             <AlertDescription>
-              <div className="space-y-1">
-                <p><strong>Import berhasil!</strong></p>
-                <p>File: {result.filename}</p>
-                <p>Total baris: {result.total_rows}</p>
-                <p>Berhasil diimport: {result.total_imported}</p>
-                <p>Status: {result.status}</p>
-                {result.finished_at && (
-                  <p>Selesai: {new Date(result.finished_at).toLocaleString('id-ID')}</p>
-                )}
-              </div>
+              {message}
+            </AlertDescription>
+          </Alert>
+          <Button onClick={resetImport} variant="outline" className="w-full">
+            Import File Lain
+          </Button>
+        </div>
+      );
+    }
+
+    // status === "idle" or "error"
+    return (
+      <>
+        <div>
+          <label htmlFor="csv-file" className="block text-sm font-medium mb-2">
+            Pilih File CSV
+          </label>
+          <input
+            id="csv-file"
+            type="file"
+            accept=".csv,text/csv"
+            onChange={handleFileSelect}
+            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+          />
+        </div>
+
+        {file && (
+          <div className="bg-gray-50 p-3 rounded-md">
+            <p className="text-sm"><strong>File:</strong> {file.name}</p>
+            <p className="text-sm"><strong>Ukuran:</strong> {(file.size / 1024).toFixed(1)} KB</p>
+          </div>
+        )}
+
+        <Button 
+          onClick={handleUploadAndImport}
+          disabled={!file}
+          className="w-full"
+        >
+          Upload & Proses
+        </Button>
+
+        {status === "error" && (
+          <Button onClick={resetImport} variant="outline" className="w-full">
+            Pilih File Lain
+          </Button>
+        )}
+      </>
+    );
+  };
+
+  return (
+    <Card className="w-full max-w-2xl mx-auto">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          {getStatusIcon()}
+          Import Data CSV
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {renderContent()}
+
+        {status === "error" && message && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              {message}
             </AlertDescription>
           </Alert>
         )}
 
-        {result && (
-          <Button onClick={resetImport} variant="outline" className="w-full">
-            Import File Lain
-          </Button>
-        )}
-
-        <div className="text-xs text-muted-foreground space-y-1">
+        <div className="text-xs text-gray-500 space-y-1">
           <p><strong>Format CSV yang diharapkan:</strong></p>
-          <p>date,type,category,amountRp,notes</p>
-          <p>2024-01-15,income,Penjualan,1500000,Penjualan produk A</p>
-          <p>2024-01-16,expense,Marketing,200000,Iklan Facebook</p>
-          
-          <p className="pt-2"><strong>Catatan:</strong></p>
-          <ul className="list-disc list-inside space-y-1">
-            <li>type: income, cogs, expense</li>
-            <li>amountRp: angka dalam rupiah (tanpa titik/koma)</li>
-            <li>date: format YYYY-MM-DD</li>
-            <li>Duplikasi akan diabaikan berdasarkan hash unik</li>
-          </ul>
+          <p>Header: date,type,category,amountRp,notes</p>
+          <p>Contoh: 2024-01-15,income,Penjualan,1500000,Penjualan produk A</p>
+          <p>Type: income, cogs, expense</p>
         </div>
       </CardContent>
     </Card>
   );
-};
-
-export default ImportCsvSupabase;
+}
