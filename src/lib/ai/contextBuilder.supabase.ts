@@ -126,18 +126,30 @@ export async function buildStrategyContextSupabase(monthsBack: number = 12): Pro
     // Reverse to get chronological order (oldest to newest)
     const sortedMetrics = monthlyMetrics.reverse();
 
-    const months = sortedMetrics.map((metric: MonthlyMetric) => ({
-      monthStart: metric.month_start,
-      salesRp: metric.sales_rp,
-      cogsRp: metric.cogs_rp,
-      opexRp: metric.opex_rp,
-      grossProfitRp: metric.gross_profit_rp,
-      netProfitRp: metric.net_profit_rp,
-      grossMargin: metric.gross_margin,
-      netMargin: metric.net_margin,
-      momSalesPct: metric.mom_sales_pct,
-      topExpenses: metric.top_expenses || []
-    }));
+    const months = sortedMetrics.map((metric: MonthlyMetric) => {
+      const salesRp = metric.sales_rp || 0;
+      const cogsRp = metric.cogs_rp || 0;
+      const opexRp = metric.opex_rp || 0;
+      
+      // Calculate margins from raw data to ensure accuracy
+      const grossProfitRp = salesRp - cogsRp;
+      const netProfitRp = grossProfitRp - opexRp;
+      const grossMargin = salesRp > 0 ? (grossProfitRp / salesRp) * 100 : 0;
+      const netMargin = salesRp > 0 ? (netProfitRp / salesRp) * 100 : 0;
+      
+      return {
+        monthStart: metric.month_start,
+        salesRp,
+        cogsRp,
+        opexRp,
+        grossProfitRp,
+        netProfitRp,
+        grossMargin,
+        netMargin,
+        momSalesPct: metric.mom_sales_pct || 0,
+        topExpenses: metric.top_expenses || []
+      };
+    });
 
     const startMonth = sortedMetrics[0].month_start;
     const endMonth = sortedMetrics[sortedMetrics.length - 1].month_start;

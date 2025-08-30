@@ -27,7 +27,7 @@ const StrategyPlanSchema = {
         effort:{ type: "string", enum: ["rendah","sedang","tinggi"] },
         action:{ type: "string" },
         notes: { type: "string" }
-      }, required: ["title","impact","effort","action"]
+      }, required: ["title","impact","effort","action","notes"]
     }, minItems: 3, maxItems: 5 },
     initiatives: { type: "array", items: {
       type: "object", properties: {
@@ -38,7 +38,7 @@ const StrategyPlanSchema = {
         kpi: { type: "string" },
         target: { type: "string" },
         notes: { type: "string" }
-      }, required: ["title","description","owner","startMonth","kpi","target"]
+      }, required: ["title","description","owner","startMonth","kpi","target","notes"]
     }, minItems: 3, maxItems: 6 },
     risks: { type: "array", items: { type: "string" } },
     assumptions: { type: "array", items: { type: "string" } },
@@ -79,6 +79,47 @@ function sanitizeContext(raw: AnyObj) {
     seasonalityHints: arr(raw?.seasonalityHints).map((x) => str(x)),
     notes: arr(raw?.notes).map((x) => str(x)),
   };
+}
+
+function generateRuleSeeds(ctx: any): string {
+  if (!ctx.months || ctx.months.length === 0) return "No rule seeds available - insufficient data.";
+  
+  const features = ctx.features || {};
+  const lastMonth = ctx.months[ctx.months.length - 1];
+  const nextMonth = getNextMonth(lastMonth?.monthStart || '2025-01');
+  const seeds = [];
+  
+  // High OPEX seed
+  if (features.opexShare > 0.3) {
+    seeds.push(`Quick Win: "Kontrol OPEX Darurat" - OPEX/sales ${(features.opexShare * 100).toFixed(1)}% terlalu tinggi, target turun ke ${((features.opexShare - 0.05) * 100).toFixed(1)}%`);
+  }
+  
+  // Margin trend seed
+  if (features.nmTrend < -3) {
+    seeds.push(`Initiative: "Program Pemulihan Profitabilitas" - Net margin trend turun ${Math.abs(features.nmTrend).toFixed(1)} p.p, target naik dari ${features.nmAvg.toFixed(1)}% ke ${(features.nmAvg + 5).toFixed(1)}%`);
+  }
+  
+  // Volatility seed
+  if (features.volatilityIdx > 15) {
+    seeds.push(`Initiative: "Stabilisasi Penjualan" - Volatilitas ${features.volatilityIdx.toFixed(1)}% terlalu tinggi, target <12%`);
+  }
+  
+  // Seasonal seed
+  if (features.peakMonth && features.lowMonth && features.peakMonth !== features.lowMonth) {
+    seeds.push(`Initiative: "Optimalisasi ${features.lowMonth}" - Peak: ${features.peakMonth}, Low: ${features.lowMonth}, target naik 20% di bulan lemah`);
+  }
+  
+  return seeds.length > 0 ? seeds.join('\n') : "Standard business optimization recommendations.";
+}
+
+function getNextMonth(monthStart: string): string {
+  try {
+    const date = new Date(monthStart + '-01');
+    date.setMonth(date.getMonth() + 1);
+    return date.toISOString().slice(0, 7);
+  } catch {
+    return '2025-09';
+  }
 }
 
 function extractFirstJson(text: string): string | null {
@@ -156,18 +197,25 @@ Deno.serve(async (req) => {
 
       // Try Hugging Face API first
       try {
+        // Generate rule-based seeds for more deterministic variation
+        const ruleSeeds = generateRuleSeeds(ctx);
+        
         const prompt = `Generate a strategic business analysis in JSON format based on the following context data. 
 
 CRITICAL REQUIREMENTS:
-- Every diagnosis MUST reference specific months and numbers from the context (e.g., "penjualan turun 12% MoM pada 2025-06")
-- Every quick win MUST include numerical justification (e.g., "OPEX/sales 22% pada 2025-08")  
-- Every initiative MUST have measurable KPI and target with specific percentages or amounts
-- Use startMonth as the next month after the latest data month
-- Include notes field with data references for each recommendation
+- Every diagnosis MUST reference specific months and numbers from the context (e.g., "penjualan turun 12% MoM pada ${ctx.months[ctx.months.length-1]?.monthStart}")
+- Every quick win MUST include numerical justification with exact figures (e.g., "OPEX/sales ${(ctx.features.opexShare * 100).toFixed(1)}% pada ${ctx.months[ctx.months.length-1]?.monthStart}")  
+- Every initiative MUST have measurable KPI and target with specific percentages or amounts from the data
+- Use startMonth as the next month after the latest data month: ${getNextMonth(ctx.months[ctx.months.length-1]?.monthStart || '2025-01')}
+- MANDATORY: Include notes field with specific data references for each quick win and initiative
+- Focus on the specific business metrics: GM avg ${ctx.features.gmAvg.toFixed(1)}%, NM avg ${ctx.features.nmAvg.toFixed(1)}%, OPEX share ${(ctx.features.opexShare * 100).toFixed(1)}%
 
-Context: ${JSON.stringify(ctx, null, 2)}
+SUGGESTED CANDIDATES (you can modify or add to these):
+${ruleSeeds}
 
-Return valid JSON matching the schema exactly.`;
+Context Data: ${JSON.stringify(ctx, null, 2)}
+
+Return valid JSON matching the schema exactly. Every recommendation must cite specific months and numerical data from the context.`;
       
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
@@ -272,36 +320,43 @@ Return valid JSON matching the schema exactly.`;
     
     const totalSales = ctx.months.reduce((sum: number, m: any) => sum + num(m.salesRp, 0), 0);
     const avgMonthlySales = totalSales / Math.max(ctx.months.length, 1);
-    const lastMonthSales = ctx.months[ctx.months.length - 1]?.salesRp || 0;
+    const lastMonth = ctx.months[ctx.months.length - 1] || {};
+    const lastMonthSales = lastMonth.salesRp || 0;
+    const lastMonthStr = lastMonth.monthStart || '2025-08';
+    const nextMonth = getNextMonth(lastMonthStr);
     const trend = lastMonthSales > avgMonthlySales ? "meningkat" : "menurun";
+    const features = ctx.features || {};
     
     const fallbackPlan = {
       umkmLevel: ctx.umkmLevel || "mikro",
       diagnosis: [
-        `Penjualan rata-rata bulanan: Rp ${avgMonthlySales} (data ${ctx.months.length} bulan)`,
-        `Tren penjualan periode ini: ${trend}`,
-        `Total omzet ${ctx.months.length} bulan terakhir: Rp ${totalSales}`,
-        "Perlu analisis margin kotor dan operasional yang lebih detail",
-        "Struktur biaya perlu dioptimalkan untuk meningkatkan profitabilitas"
+        `Penjualan rata-rata bulanan: Rp ${Math.round(avgMonthlySales).toLocaleString()} (data ${ctx.months.length} bulan terakhir)`,
+        `Penjualan ${lastMonthStr}: Rp ${lastMonthSales.toLocaleString()}, tren ${trend} vs rata-rata`,
+        `Gross margin rata-rata: ${(features.gmAvg || 0).toFixed(1)}%, Net margin: ${(features.nmAvg || 0).toFixed(1)}%`,
+        `OPEX share: ${((features.opexShare || 0) * 100).toFixed(1)}% dari sales pada ${lastMonthStr}`,
+        `Volatilitas penjualan: ${(features.volatilityIdx || 0).toFixed(1)}% menunjukkan ${features.volatilityIdx > 15 ? 'fluktuasi tinggi' : 'relatif stabil'}`
       ],
       quickWins: [
         {
           title: "Optimalisasi Biaya Operasional",
           impact: "tinggi",
           effort: "sedang", 
-          action: "Review dan negosiasi ulang kontrak supplier utama untuk menurunkan COGS"
+          action: "Review dan negosiasi ulang kontrak supplier utama untuk menurunkan COGS",
+          notes: `OPEX/sales saat ini ${((features.opexShare || 0) * 100).toFixed(1)}% pada ${lastMonthStr}`
         },
         {
           title: "Peningkatan Margin Produk",
           impact: "tinggi",
           effort: "rendah",
-          action: "Analisis pricing strategy untuk produk dengan margin tertinggi"
+          action: "Analisis pricing strategy untuk produk dengan margin tertinggi",
+          notes: `Gross margin rata-rata ${(features.gmAvg || 0).toFixed(1)}% masih bisa dioptimalkan`
         },
         {
           title: "Efisiensi Inventori",
           impact: "sedang",
           effort: "rendah",
-          action: "Implementasi sistem tracking inventori untuk mengurangi waste"
+          action: "Implementasi sistem tracking inventori untuk mengurangi waste",
+          notes: `Fokus pada bulan ${features.lowMonth || lastMonthStr} yang menunjukkan penjualan terendah`
         }
       ],
       initiatives: [
@@ -309,25 +364,28 @@ Return valid JSON matching the schema exactly.`;
           title: "Program Digitalisasi Penjualan",
           description: "Mengembangkan channel digital untuk meningkatkan jangkauan pasar",
           owner: "Tim Marketing & IT",
-          startMonth: "2025-09",
+          startMonth: nextMonth,
           kpi: "Peningkatan penjualan online",
-          target: "25% dari total penjualan dalam 6 bulan"
+          target: "25% dari total penjualan dalam 6 bulan",
+          notes: `Dimulai ${nextMonth} setelah data terakhir ${lastMonthStr}`
         },
         {
           title: "Sistem Manajemen Keuangan",
-          description: "Implementasi sistem akuntansi terintegrasi untuk tracking real-time",
-          owner: "Tim Finance",
-          startMonth: "2025-10",
+          description: "Implementasi sistem akuntangi terintegrasi untuk tracking real-time",
+          owner: "Tim Finance", 
+          startMonth: nextMonth,
           kpi: "Akurasi laporan keuangan",
-          target: "Laporan real-time mingguan"
+          target: "Laporan real-time mingguan",
+          notes: `Net margin ${(features.nmAvg || 0).toFixed(1)}% perlu monitoring ketat`
         },
         {
           title: "Program Efisiensi Operasional", 
           description: "Optimalisasi proses bisnis untuk mengurangi biaya operasional",
           owner: "Tim Operations",
-          startMonth: "2025-09",
-          kpi: "Rasio OPEX terhadap Revenue",
-          target: "Turun 15% dalam 4 bulan"
+          startMonth: nextMonth,
+          kpi: "Rasio OPEX terhadap Revenue", 
+          target: `Turun dari ${((features.opexShare || 0) * 100).toFixed(1)}% ke ${(((features.opexShare || 0) - 0.05) * 100).toFixed(1)}% dalam 4 bulan`,
+          notes: `OPEX share ${((features.opexShare || 0) * 100).toFixed(1)}% pada ${lastMonthStr} terlalu tinggi`
         }
       ],
       risks: [
