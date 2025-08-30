@@ -29,6 +29,14 @@ export interface StrategyResult {
   savedSummaryId?: string;
   context?: StrategyContext;
   error?: string;
+  source?: 'cache' | 'ai' | 'fallback';
+  meta?: {
+    provider?: string;
+    model?: string;
+    source?: string;
+    monthsUsed?: number;
+    ctxHash?: string;
+  };
 }
 
 /**
@@ -38,9 +46,18 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
   try {
     console.log('Starting strategy analysis...');
     
+    // Get current user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return {
+        success: false,
+        error: 'User not authenticated',
+      };
+    }
+
     // Build context from Supabase data
     const context = await buildStrategyContextSupabase(monthsBack);
-    console.log('Built context:', context);
+    console.log('Context built:', { monthsCount: context.months.length });
 
     if (context.months.length < 2) {
       return {
@@ -49,70 +66,84 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
       };
     }
 
-    // Get current user session for authentication
-    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    
-    if (sessionError || !session) {
+    // Calculate context hash for caching
+    const ctxHash = await hashContext(context);
+    console.log('Context hash:', ctxHash.slice(0, 16));
+
+    // Check for cached result with matching context hash
+    const { data: cached, error: cacheError } = await supabase
+      .from('ai_summaries')
+      .select('result_json, context_snapshot')
+      .eq('user_id', user.id)
+      .eq('type', 'strategy_plan')
+      .eq('context_hash', ctxHash)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (cacheError) {
+      console.warn('Cache check failed:', cacheError.message);
+    }
+
+    if (cached?.result_json) {
+      console.log('Using cached strategy plan with matching context');
       return {
-        success: false,
-        error: 'Sesi tidak valid. Silakan login ulang.'
+        success: true,
+        plan: cached.result_json as StrategyPlan,
+        context: context,
+        source: 'cache'
       };
     }
 
-    console.log('Calling ai_generate_plan edge function...');
+    console.log('No matching cache found, generating new strategy...');
 
-    // Call AI strategy generation via Edge Function
-    const { data: response, error: functionError } = await supabase.functions
-      .invoke('ai_generate_plan', {
-        body: { context },
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      });
+    // Get auth token for Edge Function
+    const session = await supabase.auth.getSession();
+    if (!session.data.session?.access_token) {
+      return {
+        success: false,
+        error: 'No authentication token available',
+      };
+    }
+
+    // Call Edge Function
+    const { data: response, error: functionError } = await supabase.functions.invoke('ai_generate_plan', {
+      body: { context, ctxHash },
+      headers: {
+        Authorization: `Bearer ${session.data.session.access_token}`,
+      },
+    });
 
     if (functionError) {
       console.error('Edge function error:', functionError);
-      
-      // Handle detailed error from robust function
-      let errorMessage = `AI service error: ${functionError.message}`;
-      
-      // Try to get detailed error from function response
-      try {
-        if (functionError.context) {
-          const errorDetail = await functionError.context.json();
-          if (errorDetail.error) {
-            errorMessage = errorDetail.error;
-            if (errorDetail.status && errorDetail.body) {
-              errorMessage += ` (HTTP ${errorDetail.status}: ${errorDetail.body})`;
-            }
-          }
-        }
-      } catch (e) {
-        console.log('Could not parse error detail:', e);
-      }
-      
       return {
         success: false,
-        error: errorMessage,
+        error: functionError.message || 'Failed to generate strategy plan',
         context
       };
     }
 
-    // Handle new response format from robust function
-    if (!response.ok) {
-      console.error('AI generation failed:', response.error);
+    if (!response?.ok) {
+      console.error('Edge function returned error:', response);
       return {
         success: false,
-        error: response.error || 'AI analysis failed',
+        error: response?.error || 'Unknown error occurred',
         context
       };
     }
 
-    console.log('Strategy plan generated successfully');
+    const plan = response.json || response.plan;
+    const meta = response.meta || {};
+
+    if (!plan) {
+      return {
+        success: false,
+        error: 'No plan data received from AI service',
+        context
+      };
+    }
 
     // Validate the response structure
-    const plan = response.json as StrategyPlan;
-    
     if (!plan.umkmLevel || !plan.diagnosis || !plan.quickWins || !plan.initiatives) {
       console.error('Invalid plan structure:', plan);
       return {
@@ -132,58 +163,53 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
       };
     }
 
-    // Validate quick wins structure
-    for (const qw of plan.quickWins) {
-      if (!qw.title || !qw.impact || !qw.effort || !qw.action) {
-        console.error('Invalid quick win structure:', qw);
-        return {
-          success: false,
-          error: 'Invalid quick wins data structure',
-          context
-        };
-      }
-    }
+    console.log('Strategy plan generated successfully');
+    console.log('Metadata:', meta);
 
-    // Validate initiatives structure
-    for (const initiative of plan.initiatives) {
-      if (!initiative.title || !initiative.description || !initiative.owner || 
-          !initiative.startMonth || !initiative.kpi || !initiative.target) {
-        console.error('Invalid initiative structure:', initiative);
-        return {
-          success: false,
-          error: 'Invalid initiatives data structure',
-          context
-        };
-      }
-      
-      // Validate startMonth format (YYYY-MM)
-      if (!/^\d{4}-\d{2}$/.test(initiative.startMonth)) {
-        console.error('Invalid startMonth format:', initiative.startMonth);
-        return {
-          success: false,
-          error: `Invalid month format: ${initiative.startMonth}. Expected YYYY-MM`,
-          context
-        };
-      }
+    // Save to database with metadata
+    const { data: savedSummary, error: saveError } = await supabase
+      .from('ai_summaries')
+      .insert({
+        user_id: user.id,
+        type: 'strategy_plan',
+        model: meta.model || 'unknown',
+        version: 1,
+        result_json: plan,
+        context_snapshot: context,
+        context_hash: ctxHash,
+      })
+      .select('id')
+      .single();
+
+    if (saveError) {
+      console.warn('Failed to save summary:', saveError.message);
+      // Don't fail the whole operation if saving fails
     }
 
     return {
       success: true,
-      plan,
-      savedSummaryId: response.savedSummaryId,
-      context
+      plan: plan as StrategyPlan,
+      savedSummaryId: savedSummary?.id,
+      context: context,
+      meta: meta,
+      source: meta.source === 'local-fallback' ? 'fallback' : 'ai'
     };
 
   } catch (error) {
     console.error('Strategy analysis error:', error);
-    
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    
     return {
       success: false,
-      error: errorMessage
+      error: error instanceof Error ? error.message : 'An unexpected error occurred',
     };
   }
+}
+
+/**
+ * Hash context for caching
+ */
+async function hashContext(ctx: any): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(ctx)));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
 /**

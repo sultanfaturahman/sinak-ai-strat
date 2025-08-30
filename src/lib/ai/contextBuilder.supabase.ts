@@ -53,6 +53,18 @@ export interface StrategyContext {
   last12mTurnoverRp: number;
   seasonalityHints: string[];
   notes: string[];
+  features: {
+    gmAvg: number;
+    nmAvg: number;
+    gmTrend: number;
+    nmTrend: number;
+    momSales: (number | null)[];
+    volatilityIdx: number;
+    opexShare: number;
+    topExpensesLast: Array<{category: string; amount_rp: number}>;
+    peakMonth?: string;
+    lowMonth?: string;
+  };
 }
 
 /**
@@ -134,6 +146,9 @@ export async function buildStrategyContextSupabase(monthsBack: number = 12): Pro
     // Generate business notes based on data analysis
     const notes = generateBusinessNotes(months, profile);
 
+    // Calculate rich features for better context differentiation
+    const features = calculateContextFeatures(months);
+
     const context: StrategyContext = {
       company: {
         displayName: profile?.display_name || 'UMKM',
@@ -148,7 +163,8 @@ export async function buildStrategyContextSupabase(monthsBack: number = 12): Pro
       months,
       last12mTurnoverRp: profile?.last12m_turnover_rp || 0,
       seasonalityHints,
-      notes
+      notes,
+      features
     };
 
     return context;
@@ -222,6 +238,89 @@ function generateSeasonalityHints(months: StrategyContext['months']): string[] {
   }
 
   return hints;
+}
+
+/**
+ * Calculate rich context features for differentiation
+ */
+function calculateContextFeatures(months: StrategyContext['months']): StrategyContext['features'] {
+  if (months.length === 0) {
+    return {
+      gmAvg: 0,
+      nmAvg: 0,
+      gmTrend: 0,
+      nmTrend: 0,
+      momSales: [],
+      volatilityIdx: 0,
+      opexShare: 0,
+      topExpensesLast: [],
+    };
+  }
+
+  // Calculate averages
+  const gmAvg = months.reduce((sum, m) => sum + m.grossMargin, 0) / months.length;
+  const nmAvg = months.reduce((sum, m) => sum + m.netMargin, 0) / months.length;
+
+  // Calculate trends (first half vs second half)
+  let gmTrend = 0;
+  let nmTrend = 0;
+  if (months.length >= 6) {
+    const firstHalf = months.slice(0, Math.floor(months.length / 2));
+    const secondHalf = months.slice(Math.floor(months.length / 2));
+    
+    const firstGmAvg = firstHalf.reduce((sum, m) => sum + m.grossMargin, 0) / firstHalf.length;
+    const secondGmAvg = secondHalf.reduce((sum, m) => sum + m.grossMargin, 0) / secondHalf.length;
+    gmTrend = secondGmAvg - firstGmAvg;
+
+    const firstNmAvg = firstHalf.reduce((sum, m) => sum + m.netMargin, 0) / firstHalf.length;
+    const secondNmAvg = secondHalf.reduce((sum, m) => sum + m.netMargin, 0) / secondHalf.length;
+    nmTrend = secondNmAvg - firstNmAvg;
+  }
+
+  // Calculate MoM sales growth array
+  const momSales: (number | null)[] = months.map((month, i) => {
+    if (i === 0) return null;
+    const prev = months[i - 1];
+    return prev.salesRp > 0 ? ((month.salesRp - prev.salesRp) / prev.salesRp) * 100 : null;
+  });
+
+  // Calculate volatility index (standard deviation of MoM growth)
+  const validMomSales = momSales.filter(m => m !== null) as number[];
+  let volatilityIdx = 0;
+  if (validMomSales.length > 1) {
+    const momAvg = validMomSales.reduce((sum, m) => sum + m, 0) / validMomSales.length;
+    const variance = validMomSales.reduce((sum, m) => sum + Math.pow(m - momAvg, 2), 0) / validMomSales.length;
+    volatilityIdx = Math.sqrt(variance);
+  }
+
+  // Calculate average OPEX share
+  const totalSales = months.reduce((sum, m) => sum + m.salesRp, 0);
+  const totalOpex = months.reduce((sum, m) => sum + m.opexRp, 0);
+  const opexShare = totalSales > 0 ? totalOpex / totalSales : 0;
+
+  // Get latest month's top expenses
+  const topExpensesLast = months[months.length - 1]?.topExpenses || [];
+
+  // Find peak and low months
+  const peakMonth = months.reduce((peak, month) => 
+    month.salesRp > peak.salesRp ? month : peak
+  );
+  const lowMonth = months.reduce((low, month) => 
+    month.salesRp < low.salesRp ? month : low
+  );
+
+  return {
+    gmAvg,
+    nmAvg,
+    gmTrend,
+    nmTrend,
+    momSales,
+    volatilityIdx,
+    opexShare,
+    topExpensesLast,
+    peakMonth: peakMonth.monthStart,
+    lowMonth: lowMonth.monthStart,
+  };
 }
 
 /**

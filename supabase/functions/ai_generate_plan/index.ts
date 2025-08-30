@@ -183,7 +183,25 @@ Deno.serve(async (req) => {
           let json: unknown;
           try {
             json = JSON.parse(text);
-            return new Response(JSON.stringify({ ok: true, json }), {
+            
+            // Create context hash for metadata
+            const ctxString = JSON.stringify(ctx);
+            const ctxHashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ctxString));
+            const ctxHash = Array.from(new Uint8Array(ctxHashBuffer))
+              .map(b => b.toString(16).padStart(2, '0'))
+              .join('').slice(0, 16);
+            
+            return new Response(JSON.stringify({ 
+              ok: true, 
+              json,
+              meta: {
+                provider: "huggingface",
+                model: MODEL_ID,
+                source: "hf",
+                monthsUsed: ctx.months.length,
+                ctxHash: ctxHash
+              }
+            }), {
               status: 200, headers: { ...corsHeaders(origin), "content-type": "application/json" }
             });
           } catch (parseError) {
@@ -191,7 +209,25 @@ Deno.serve(async (req) => {
             if (ex) {
               try {
                 json = JSON.parse(ex);
-                return new Response(JSON.stringify({ ok: true, json }), {
+                
+                // Create context hash for metadata
+                const ctxString = JSON.stringify(ctx);
+                const ctxHashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ctxString));
+                const ctxHash = Array.from(new Uint8Array(ctxHashBuffer))
+                  .map(b => b.toString(16).padStart(2, '0'))
+                  .join('').slice(0, 16);
+                
+                return new Response(JSON.stringify({ 
+                  ok: true, 
+                  json,
+                  meta: {
+                    provider: "huggingface",
+                    model: MODEL_ID,
+                    source: "hf",
+                    monthsUsed: ctx.months.length,
+                    ctxHash: ctxHash
+                  }
+                }), {
                   status: 200, headers: { ...corsHeaders(origin), "content-type": "application/json" }
                 });
               } catch (extractError) {
@@ -288,7 +324,24 @@ Deno.serve(async (req) => {
       ]
     };
 
-    return new Response(JSON.stringify({ ok: true, json: fallbackPlan, source: "fallback" }), {
+    // Create context hash for metadata  
+    const ctxString = JSON.stringify(ctx);
+    const ctxHashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ctxString));
+    const ctxHash = Array.from(new Uint8Array(ctxHashBuffer))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('').slice(0, 16);
+
+    return new Response(JSON.stringify({ 
+      ok: true, 
+      json: fallbackPlan,
+      meta: {
+        provider: "fallback",
+        model: "local",
+        source: "local-fallback",
+        monthsUsed: ctx.months.length,
+        ctxHash: ctxHash
+      }
+    }), {
       status: 200, headers: { ...corsHeaders(origin), "content-type": "application/json" }
     });
 
