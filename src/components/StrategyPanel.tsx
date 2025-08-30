@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { runStrategyAnalysis, formatStrategyDisplay, StrategyPlan } from '@/lib/ai/runStrategy.supabase';
 import { useToast } from '@/hooks/use-toast';
+import DevBanner from './DevBanner';
 
 interface StrategyPanelProps {
   monthsBack?: number;
@@ -90,6 +91,13 @@ const StrategyPanel: React.FC<StrategyPanelProps> = ({ monthsBack = 12 }) => {
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-6">
+      {/* Dev Banner */}
+      <DevBanner 
+        monthsUsed={contextMonths}
+        ctxHash={metadata?.ctxHash}
+        source={metadata?.source}
+      />
+      
       {/* Header */}
       <Card>
         <CardHeader>

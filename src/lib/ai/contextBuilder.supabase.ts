@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { getSupabase } from '@/lib/supabaseClient';
 
 // Types for our database schema
 export type MonthlyMetric = {
@@ -72,6 +72,8 @@ export interface StrategyContext {
  */
 export async function buildStrategyContextSupabase(monthsBack: number = 12): Promise<StrategyContext> {
   try {
+    const supabase = getSupabase();
+    
     // Get current user
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) {

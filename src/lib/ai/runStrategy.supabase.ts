@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { getSupabase } from '@/lib/supabaseClient';
 import { buildStrategyContextSupabase, StrategyContext } from './contextBuilder.supabase';
 
 export interface StrategyPlan {
@@ -9,6 +9,7 @@ export interface StrategyPlan {
     impact: 'rendah' | 'sedang' | 'tinggi';
     effort: 'rendah' | 'sedang' | 'tinggi';
     action: string;
+    notes?: string;
   }>;
   initiatives: Array<{
     title: string;
@@ -17,6 +18,7 @@ export interface StrategyPlan {
     startMonth: string; // YYYY-MM format
     kpi: string;
     target: string;
+    notes?: string;
   }>;
   risks?: string[];
   assumptions?: string[];
@@ -46,6 +48,8 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
   try {
     console.log('Starting strategy analysis...');
     
+    const supabase = getSupabase();
+    
     // Get current user
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) {
@@ -57,7 +61,10 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
 
     // Build context from Supabase data
     const context = await buildStrategyContextSupabase(monthsBack);
-    console.log('Context built:', { monthsCount: context.months.length });
+    console.log('Context built:', { 
+      monthsCount: context.months.length,
+      features: context.features  
+    });
 
     if (context.months.length < 2) {
       return {
@@ -106,9 +113,14 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
       };
     }
 
-    // Call Edge Function
+    // Call Edge Function with enhanced parameters
     const { data: response, error: functionError } = await supabase.functions.invoke('ai_generate_plan', {
-      body: { context, ctxHash },
+      body: { 
+        context, 
+        ctxHash,
+        forceProvider: undefined, 
+        allowFallback: true 
+      },
       headers: {
         Authorization: `Bearer ${session.data.session.access_token}`,
       },
@@ -166,7 +178,7 @@ export async function runStrategyAnalysis(monthsBack: number = 12): Promise<Stra
     console.log('Strategy plan generated successfully');
     console.log('Metadata:', meta);
 
-    // Save to database with metadata
+    // Save to database with comprehensive metadata
     const { data: savedSummary, error: saveError } = await supabase
       .from('ai_summaries')
       .insert({
@@ -216,6 +228,8 @@ async function hashContext(ctx: any): Promise<string> {
  * Get previously saved strategy plans for the current user
  */
 export async function getSavedStrategyPlans(limit: number = 10) {
+  const supabase = getSupabase();
+  
   try {
     const { data: summaries, error } = await supabase
       .from('ai_summaries')

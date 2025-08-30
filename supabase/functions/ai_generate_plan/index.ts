@@ -25,7 +25,8 @@ const StrategyPlanSchema = {
         title: { type: "string" },
         impact:{ type: "string", enum: ["rendah","sedang","tinggi"] },
         effort:{ type: "string", enum: ["rendah","sedang","tinggi"] },
-        action:{ type: "string" }
+        action:{ type: "string" },
+        notes: { type: "string" }
       }, required: ["title","impact","effort","action"]
     }, minItems: 3, maxItems: 5 },
     initiatives: { type: "array", items: {
@@ -35,7 +36,8 @@ const StrategyPlanSchema = {
         owner: { type: "string" },
         startMonth: { type: "string", pattern: "^\\d{4}-\\d{2}$" },
         kpi: { type: "string" },
-        target: { type: "string" }
+        target: { type: "string" },
+        notes: { type: "string" }
       }, required: ["title","description","owner","startMonth","kpi","target"]
     }, minItems: 3, maxItems: 6 },
     risks: { type: "array", items: { type: "string" } },
@@ -124,7 +126,13 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const body = await req.json().catch(() => null) as { context?: AnyObj } | null;
+    const body = await req.json().catch(() => null) as { 
+      context?: AnyObj; 
+      ctxHash?: string; 
+      forceProvider?: "hf" | "local"; 
+      allowFallback?: boolean 
+    } | null;
+    
     if (!body?.context) {
       return new Response(JSON.stringify({ error: "Bad Request: context required" }), {
         status: 400, headers: { ...corsHeaders(origin), "content-type": "application/json" }
@@ -133,23 +141,43 @@ Deno.serve(async (req) => {
 
     // Sanitasi: TIDAK ADA toLocaleString di sini
     const ctx = sanitizeContext(body.context);
+    const ctxHash = body.ctxHash || "";
+    const forceProvider = body.forceProvider;
+    const allowFallback = body.allowFallback !== false; // default true
 
-    console.log("Attempting to call Hugging Face API...");
-    console.log("Model:", MODEL_ID);
-    console.log("URL:", HF_URL);
-    console.log("Has API Key:", !!HF_API_KEY);
+    // If forceProvider is "local", skip to fallback
+    if (forceProvider === "local") {
+      console.log("Forced to use local fallback...");
+    } else {
+      console.log("Attempting to call Hugging Face API...");
+      console.log("Model:", MODEL_ID);
+      console.log("URL:", HF_URL);
+      console.log("Has API Key:", !!HF_API_KEY);
 
-    // Try Hugging Face API first
-    try {
-      const prompt = `Generate a strategic business analysis in JSON format based on the following data: ${JSON.stringify(ctx, null, 2)}`;
+      // Try Hugging Face API first
+      try {
+        const prompt = `Generate a strategic business analysis in JSON format based on the following context data. 
+
+CRITICAL REQUIREMENTS:
+- Every diagnosis MUST reference specific months and numbers from the context (e.g., "penjualan turun 12% MoM pada 2025-06")
+- Every quick win MUST include numerical justification (e.g., "OPEX/sales 22% pada 2025-08")  
+- Every initiative MUST have measurable KPI and target with specific percentages or amounts
+- Use startMonth as the next month after the latest data month
+- Include notes field with data references for each recommendation
+
+Context: ${JSON.stringify(ctx, null, 2)}
+
+Return valid JSON matching the schema exactly.`;
       
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      
-      if (HF_API_KEY) {
-        headers["Authorization"] = `Bearer ${HF_API_KEY}`;
-      }
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "X-Wait-For-Model": "true",
+          "X-Use-Cache": "false"
+        };
+        
+        if (HF_API_KEY) {
+          headers["Authorization"] = `Bearer ${HF_API_KEY}`;
+        }
 
       const payload = {
         inputs: prompt,
@@ -184,13 +212,6 @@ Deno.serve(async (req) => {
           try {
             json = JSON.parse(text);
             
-            // Create context hash for metadata
-            const ctxString = JSON.stringify(ctx);
-            const ctxHashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ctxString));
-            const ctxHash = Array.from(new Uint8Array(ctxHashBuffer))
-              .map(b => b.toString(16).padStart(2, '0'))
-              .join('').slice(0, 16);
-            
             return new Response(JSON.stringify({ 
               ok: true, 
               json,
@@ -209,13 +230,6 @@ Deno.serve(async (req) => {
             if (ex) {
               try {
                 json = JSON.parse(ex);
-                
-                // Create context hash for metadata
-                const ctxString = JSON.stringify(ctx);
-                const ctxHashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ctxString));
-                const ctxHash = Array.from(new Uint8Array(ctxHashBuffer))
-                  .map(b => b.toString(16).padStart(2, '0'))
-                  .join('').slice(0, 16);
                 
                 return new Response(JSON.stringify({ 
                   ok: true, 
@@ -236,9 +250,21 @@ Deno.serve(async (req) => {
             }
           }
         }
+        }
+      } catch (hfError) {
+        console.error("Hugging Face API failed:", hfError);
       }
-    } catch (hfError) {
-      console.error("Hugging Face API failed:", hfError);
+    }
+
+    // Check if fallback is allowed
+    if (!allowFallback) {
+      return new Response(JSON.stringify({ 
+        ok: false, 
+        error: "AI generation failed and fallback disabled",
+        canClientFallback: true
+      }), {
+        status: 502, headers: { ...corsHeaders(origin), "content-type": "application/json" }
+      });
     }
 
     // Fallback: Generate structured analysis based on the data
@@ -252,9 +278,9 @@ Deno.serve(async (req) => {
     const fallbackPlan = {
       umkmLevel: ctx.umkmLevel || "mikro",
       diagnosis: [
-        `Penjualan rata-rata bulanan: Rp ${avgMonthlySales.toLocaleString('id-ID')}`,
+        `Penjualan rata-rata bulanan: Rp ${avgMonthlySales} (data ${ctx.months.length} bulan)`,
         `Tren penjualan periode ini: ${trend}`,
-        `Total omzet ${ctx.months.length} bulan terakhir: Rp ${totalSales.toLocaleString('id-ID')}`,
+        `Total omzet ${ctx.months.length} bulan terakhir: Rp ${totalSales}`,
         "Perlu analisis margin kotor dan operasional yang lebih detail",
         "Struktur biaya perlu dioptimalkan untuk meningkatkan profitabilitas"
       ],
@@ -324,19 +350,12 @@ Deno.serve(async (req) => {
       ]
     };
 
-    // Create context hash for metadata  
-    const ctxString = JSON.stringify(ctx);
-    const ctxHashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ctxString));
-    const ctxHash = Array.from(new Uint8Array(ctxHashBuffer))
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join('').slice(0, 16);
-
     return new Response(JSON.stringify({ 
       ok: true, 
       json: fallbackPlan,
       meta: {
-        provider: "fallback",
-        model: "local",
+        provider: "local",
+        model: "edge-fallback",
         source: "local-fallback",
         monthsUsed: ctx.months.length,
         ctxHash: ctxHash
