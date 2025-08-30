@@ -79,19 +79,37 @@ function sanitizeContext(raw: AnyObj) {
 }
 
 function extractFirstJson(text: string): string | null {
-  const iObj = text.indexOf("{"), iArr = text.indexOf("[");
+  // Clean the text first - remove markdown code blocks if present
+  let cleaned = text.trim();
+  
+  // Remove markdown code blocks
+  cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+  
+  // Try to find JSON boundaries
+  const iObj = cleaned.indexOf("{");
+  const iArr = cleaned.indexOf("[");
   let start = -1, open = "", close = "";
-  if (iObj !== -1 && (iArr === -1 || iObj < iArr)) { start = iObj; open = "{"; close = "}"; }
-  else if (iArr !== -1) { start = iArr; open = "["; close = "]"; }
+  
+  if (iObj !== -1 && (iArr === -1 || iObj < iArr)) { 
+    start = iObj; open = "{"; close = "}"; 
+  } else if (iArr !== -1) { 
+    start = iArr; open = "["; close = "]"; 
+  }
+  
   if (start === -1) return null;
+  
   let depth = 0, inStr = false, prev = "";
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inStr) { if (ch === '"' && prev !== "\\") inStr = false; }
-    else {
+  for (let i = start; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (inStr) { 
+      if (ch === '"' && prev !== "\\") inStr = false; 
+    } else {
       if (ch === '"') inStr = true;
       else if (ch === open) depth++;
-      else if (ch === close) { depth--; if (depth === 0) return text.slice(start, i+1); }
+      else if (ch === close) { 
+        depth--; 
+        if (depth === 0) return cleaned.slice(start, i+1); 
+      }
     }
     prev = ch;
   }
@@ -155,18 +173,43 @@ Deno.serve(async (req) => {
     const data = await res.json().catch(() => ({}));
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
+    console.log("Gemini response status:", res.status);
+    console.log("Raw text from Gemini:", text);
+    console.log("Full data structure:", JSON.stringify(data, null, 2));
+
     let json: unknown;
     try {
       if (!text) throw new Error("Empty model response");
       json = JSON.parse(text);
-    } catch {
+      console.log("Successfully parsed JSON:", json);
+    } catch (parseError) {
+      console.log("JSON parse failed, trying extraction...");
       const ex = text ? extractFirstJson(text) : null;
+      console.log("Extracted JSON:", ex);
       if (!ex) {
-        return new Response(JSON.stringify({ error: "Model returned non-JSON", raw: text || data }), {
+        console.error("Failed to extract JSON from text:", text);
+        return new Response(JSON.stringify({ 
+          error: "Model returned non-JSON", 
+          raw: text || "no text", 
+          data: data,
+          parseError: (parseError as Error).message 
+        }), {
           status: 502, headers: { ...corsHeaders(origin), "content-type": "application/json" }
         });
       }
-      json = JSON.parse(ex);
+      try {
+        json = JSON.parse(ex);
+        console.log("Successfully parsed extracted JSON:", json);
+      } catch (extractError) {
+        console.error("Failed to parse extracted JSON:", ex, extractError);
+        return new Response(JSON.stringify({ 
+          error: "Failed to parse extracted JSON", 
+          extracted: ex, 
+          parseError: (extractError as Error).message 
+        }), {
+          status: 502, headers: { ...corsHeaders(origin), "content-type": "application/json" }
+        });
+      }
     }
 
     return new Response(JSON.stringify({ ok: true, json }), {
